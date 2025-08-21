@@ -6,6 +6,7 @@ from tqdm import tqdm
 from pathlib import Path
 from concurrent.futures import ThreadPoolExecutor, as_completed
 
+# pip install pymupdf faiss-gpu
 from langsmith import Client
 from langchain.schema import Document
 from langchain_openai import ChatOpenAI, OpenAIEmbeddings
@@ -46,7 +47,7 @@ client = Client()
 # ===== 1. 문서 로드 =====
 def load_all_pdfs(
     root: Path, 
-    pattern: str = "**/*.pdf", 
+    pattern: str = "**/*.pdf", # rglob은 기본이 재귀 → "*.pdf"면 충분
     workers: int = 8, 
     max_pages: Optional[int] = None, 
     cache_path: Optional[Path] = None
