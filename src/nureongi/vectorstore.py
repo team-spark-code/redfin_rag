@@ -1,4 +1,3 @@
-
 from __future__ import annotations
 from dataclasses import dataclass
 from typing import Any, Dict, Iterable, List, Optional, Sequence, Tuple, Union
@@ -11,10 +10,22 @@ from pathlib import Path
 from langchain_community.vectorstores import Qdrant as LCQdrant
 from langchain_community.vectorstores import FAISS
 from langchain_core.embeddings import Embeddings
+from langchain_huggingface import HuggingFaceEmbeddings
 from langchain.schema import Document
 
-# Clients
+# Qdrant client/types
 from qdrant_client import QdrantClient
+from qdrant_client.models import Distance as QDistance
+
+_DEF_EMB = os.environ.get("EMB_MODEL", "BAAI/bge-base-en-v1.5")
+
+def build_embedder(model_name: str | None = None):
+    model = model_name or _DEF_EMB
+    return HuggingFaceEmbeddings(
+        model_name=model,
+        encode_kwargs={"normalize_embeddings": True},  # L2 normalize=True
+        multi_process=False,
+    )
 
 # ----- helpers -----
 def _port_open(host: str, port: int, timeout: float = 0.25) -> bool:
@@ -40,72 +51,117 @@ def _to_texts_and_metas(
         raise ValueError("len(metadatas) must equal len(texts)")
     return list(texts), m
 
+def _map_distance_label(distance: str) -> str:
+    d = (distance or "cosine").lower()
+    if d in ("cos", "cosine"):
+        return "cosine"
+    if d in ("l2", "euclid", "euclidean"):
+        return "l2"
+    if d in ("dot", "ip", "inner"):
+        return "dot"
+    raise ValueError(f"Unsupported distance: {distance}")
+
+def _qdrant_distance(distance: str) -> QDistance:
+    d = _map_distance_label(distance)
+    if d == "cosine":
+        return QDistance.COSINE
+    if d == "l2":
+        return QDistance.EUCLID
+    if d == "dot":
+        return QDistance.DOT
+    # should not happen due to map
+    return QDistance.COSINE
+
 # ----- Qdrant builder -----
 def _build_qdrant_from_texts(
     embedding: Embeddings,
-    *, 
+    *,
     collection_name: str,
     docs: Sequence[Document] | None = None,
     texts: Optional[Sequence[str]] = None,
     metadatas: Optional[Sequence[Dict[str, Any]]] = None,
     url: Optional[str] = None,
     api_key: Optional[str] = None,
+    distance: str = "cosine",
+    content_payload_key: str = "page_content",
+    prefer_grpc: Optional[bool] = None,
 ):
     texts_, metas_ = _to_texts_and_metas(docs, texts, metadatas)
 
     # 1) env 우선
     url = url or os.getenv("QDRANT_URL")
     api_key = api_key or os.getenv("QDRANT_API_KEY")
+    prefer_grpc = prefer_grpc if prefer_grpc is not None else bool(int(os.getenv("QDRANT_GRPC", "0")))
 
     if url:
-        client = QdrantClient(url=url, api_key=api_key)
+        client = QdrantClient(url=url, api_key=api_key, prefer_grpc=prefer_grpc)
         client.get_collections()  # connectivity check
-        return LCQdrant.from_texts(
+        vs = LCQdrant.from_texts(
             texts=texts_,
             embedding=embedding,
             metadatas=metas_,
             client=client,
             collection_name=collection_name,
-        ), {"backend": "qdrant", "url": url, "auth": bool(api_key), "source": "env"}
+            distance=_qdrant_distance(distance),
+            content_payload_key=content_payload_key,
+        )
+        return vs, {"backend": "qdrant", "url": url, "auth": bool(api_key), "source": "env", "distance": _map_distance_label(distance)}
 
     # 2) localhost 스캔
     if _port_open("127.0.0.1", 6333):
         local = "http://localhost:6333"
-        client = QdrantClient(url=local)
+        client = QdrantClient(url=local, prefer_grpc=prefer_grpc)
         client.get_collections()
-        return LCQdrant.from_texts(
+        vs = LCQdrant.from_texts(
             texts=texts_,
             embedding=embedding,
             metadatas=metas_,
             client=client,
             collection_name=collection_name,
-        ), {"backend": "qdrant", "url": local, "auth": False, "source": "localhost"}
+            distance=_qdrant_distance(distance),
+            content_payload_key=content_payload_key,
+        )
+        return vs, {"backend": "qdrant", "url": local, "auth": False, "source": "localhost", "distance": _map_distance_label(distance)}
 
     raise ConnectionError("Qdrant not reachable (env URL missing and localhost:6333 closed)")
 
 # ----- FAISS builder -----
 def _build_faiss_from_texts(
     embedding: Embeddings,
-    *, 
+    *,
     docs: Sequence[Document] | None = None,
     texts: Optional[Sequence[str]] = None,
     metadatas: Optional[Sequence[Dict[str, Any]]] = None,
     vectors: Optional[Sequence[Sequence[float]]] = None,
     persist_dir: Optional[Path] = None,
+    distance: str = "cosine",
 ):
+    from langchain_community.vectorstores.faiss import DistanceStrategy  # lazy import to keep deps light
+
     texts_, metas_ = _to_texts_and_metas(docs, texts, metadatas)
+    d = _map_distance_label(distance)
+    dist = {
+        "cosine": DistanceStrategy.COSINE,
+        "l2": DistanceStrategy.L2,
+        "dot": DistanceStrategy.MAX_INNER_PRODUCT,
+    }[d]
 
     if vectors is not None:
         vs = FAISS.from_embeddings(
             text_embeddings=zip(texts_, vectors),
             embedding=embedding,
             metadatas=metas_,
+            distance_strategy=dist,
         )
     else:
-        # Let FAISS embed internally via embedding passed
-        vs = FAISS.from_texts(texts_, embedding=embedding, metadatas=metas_)
+        vs = FAISS.from_texts(
+            texts_,
+            embedding=embedding,
+            metadatas=metas_,
+            distance_strategy=dist,
+        )
 
-    info = {"backend": "faiss", "source": "in-memory"}
+    info = {"backend": "faiss", "source": "in-memory", "distance": d}
     if persist_dir:
         persist_dir = Path(persist_dir)
         persist_dir.mkdir(parents=True, exist_ok=True)
@@ -122,7 +178,7 @@ class VSReturn:
 
 def auto_qdrant_faiss(
     embedding: Embeddings,
-    *, 
+    *,
     collection_name: str,
     docs: Sequence[Document] | None = None,
     texts: Optional[Sequence[str]] = None,
@@ -133,12 +189,17 @@ def auto_qdrant_faiss(
     # Override Qdrant connection if desired
     qdrant_url: Optional[str] = None,
     qdrant_api_key: Optional[str] = None,
+    # Retrieval metric
+    distance: str = "cosine",
+    content_payload_key: str = "page_content",
+    prefer_grpc: Optional[bool] = None,
     quiet: bool = True,
 ) -> VSReturn:
     """
     Try Qdrant first. If it fails, fall back to FAISS.
     - Supports either docs or (texts, metadatas).
     - If FAISS path taken and `faiss_dir` provided, it persists index to disk.
+    - distance: 'cosine' (default), 'l2', or 'dot'
     """
     last_err = None
     try:
@@ -147,6 +208,8 @@ def auto_qdrant_faiss(
             collection_name=collection_name,
             docs=docs, texts=texts, metadatas=metadatas,
             url=qdrant_url, api_key=qdrant_api_key,
+            distance=distance, content_payload_key=content_payload_key,
+            prefer_grpc=prefer_grpc,
         )
         if not quiet:
             print(f"[auto_vstore] Qdrant connected: {json.dumps(info)}")
@@ -161,6 +224,7 @@ def auto_qdrant_faiss(
         embedding,
         docs=docs, texts=texts, metadatas=metadatas,
         vectors=vectors, persist_dir=Path(faiss_dir) if faiss_dir else None,
+        distance=distance,
     )
     if not quiet:
         print(f"[auto_vstore] Using FAISS: {json.dumps(info)}")

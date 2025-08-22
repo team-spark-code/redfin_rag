@@ -18,11 +18,10 @@ from langchain.text_splitter import RecursiveCharacterTextSplitter
 from langchain_community.vectorstores import FAISS
 
 from nureongi import (
-    find_pdf_files, load_single_pdf, load_cache, save_cache,
+    find_pdf_files, load_single_pdf, load_all_pdfs, load_cache, save_cache,
     build_routed_rag_chain, choose_prompt, build_routed_rag_chain,
     auto_qdrant_faiss, as_retriever
 )
-
 
 """
 대용량 PDF를 로딩하려면 어떻게 해야 할까?
@@ -43,52 +42,7 @@ os.environ["LANGSMITH_PROJECT"] = os.getenv("LANGSMITH_PROJECT", "nureongi-rag")
 
 client = Client()
 
-
 # ===== 1. 문서 로드 =====
-def load_all_pdfs(
-    root: Path, 
-    pattern: str = "**/*.pdf", # rglob은 기본이 재귀 → "*.pdf"면 충분
-    workers: int = 8, 
-    max_pages: Optional[int] = None, 
-    cache_path: Optional[Path] = None
-) -> List[Document]:
-    pdf_files = find_pdf_files(root, pattern)
-    cache = load_cache(cache_path)
-
-    # 이미 캐시에 있는 파일은 건너뛰기
-    todo = []
-    for p in pdf_files:
-        key = str(p.resolve())
-        if key in cache:
-            continue
-        todo.append(p)
-    
-    documents: List[Document] = []
-    # 캐시 적재분
-    for k in cache:
-        documents.extend(cache[k])
-
-    # 병렬 로드
-    if todo:
-        with ThreadPoolExecutor(max_workers=workers) as exe:
-            futures = {
-                exe.submit(load_single_pdf, p, max_pages): p for p in todo
-            }
-            for fut in tqdm(as_completed(futures), total=len(futures), desc="Loading PDFs"):
-                p = futures[fut]
-                key = str(p.resolve())
-                try:
-                    docs = fut.result()
-                    cache[key] = docs
-                    documents.extend(docs)
-                except Exception as e:
-                    print(f"❌ 실패: {p} -> {e}")
-
-        # 캐시 저장
-        save_cache(cache_path, cache)
-
-    return documents
-
 documents = load_all_pdfs(
     root=Path("dataset"),
     pattern="**/*.pdf",

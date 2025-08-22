@@ -3,8 +3,8 @@ from typing import List, Dict, Any, Iterable, Optional
 from langchain.schema import Document
 import json
 
-def find_pdf_files(root: Path, pattern: str = "**/*.pdf") -> List[Path]:
-    return [p for p in root.rglob(pattern) if p.is_file()]
+# def find_pdf_files(root: Path, pattern: str = "**/*.pdf") -> List[Path]:
+#     return [p for p in root.rglob(pattern) if p.is_file()]
 
 def serialize_document(doc: Document) -> Dict[str, Any]:
     """Langchain Document -> JSON 직렬화용 dict"""

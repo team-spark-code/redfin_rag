@@ -1,3 +1,4 @@
+# nureongi/cache.py
 import pickle
 from pathlib import Path
 from typing import Optional, Dict, List
@@ -15,3 +16,4 @@ def save_cache(cache_path: Optional[Path], cache: Dict[str, List[Document]]) -> 
     cache_path.parent.mkdir(parents=True, exist_ok=True)
     with cache_path.open("wb") as f:
         pickle.dump(cache, f, protocol=pickle.HIGHEST_PROTOCOL)
+

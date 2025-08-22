@@ -1,35 +1,64 @@
+# nureongi/__init__.py
+
 """
-Nureongi RAG 패키지
-
-정부 문서 기반 RAG 시스템을 위한 모듈들
+nureongi: Redfin RAG 패키지의 Public API 집합
+- RAPTOR, VectorStore, Chain을 공식 공개 API로 승격
+- 기존 import 경로 호환 유지
 """
 
-from .utils import find_pdf_files, serialize_document, save_jsonl
-from .loaders import load_single_pdf
-from .caches import load_cache, save_cache
-from .chain import build_routed_rag_chain
-from .router import choose_prompt, route_persona
-from .format import format_ctx, format_docs, build_cite
-from .persona import PersonaSlug, PROMPT_REGISTRY, ALIAS_TO_SLUG
-from .vectorstore import auto_qdrant_faiss, as_retriever
+__version__ = "0.2.0"  # 버전 관리 권장
 
-__version__ = "0.1.0"
+# --- Core loaders / indexing ---
+from .loaders import NewsLoader
+from .indexing import TextChunker, build_index
+
+# --- Personas / formatting ---
+from .persona import PersonaSlug, get_persona_by_alias  # 기존 호환 유지
+from .format import format_ctx
+
+# --- Vector store (Qdrant/FAISS) ---
+from .vectorstore import (
+    auto_qdrant_faiss,
+    as_retriever,
+    build_embedder,
+)
+
+# --- RAPTOR (기본 사용) ---
+from .raptor import raptor_reduce  # 실제 구현이면 여기에 필요한 공개 함수 추가
+
+# --- RAG chain (LLM 호출) ---
+from .chain import build_rag_chain
+
+# --- Optional cache utils ---
+from .cache import load_cache, save_cache
+
+
 __all__ = [
-    "find_pdf_files",
-    "serialize_document", 
-    "save_jsonl",
-    "load_single_pdf",
+    # Core
+    "NewsLoader",
+    "TextChunker",
+    "build_index",
+
+    # Personas / format
+    "PersonaSlug",
+    "get_persona_by_alias",
+    "format_ctx",
+
+    # Vector store
+    "auto_qdrant_faiss",
+    "as_retriever",
+    "build_embedder",
+
+    # RAPTOR
+    "raptor_reduce",
+
+    # Chain
+    "build_rag_chain",
+
+    # Cache
     "load_cache",
     "save_cache",
-    "build_routed_rag_chain",
-    "choose_prompt",
-    "route_persona",
-    "format_ctx",
-    "format_docs",
-    "build_cite",
-    "PersonaSlug",
-    "PROMPT_REGISTRY",
-    "ALIAS_TO_SLUG",
-    "auto_qdrant_faiss",
-    "as_retriever"
+
+    # Meta
+    "__version__",
 ]
