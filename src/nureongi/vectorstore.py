@@ -109,7 +109,7 @@ def _build_qdrant_from_texts(
 
     # 2) localhost 스캔
     if _port_open("127.0.0.1", 6333):
-        local = "http://localhost:6333"
+        local = "http://100.97.183.123:6333"
         client = QdrantClient(url=local, prefer_grpc=prefer_grpc)
         client.get_collections()
         vs = LCQdrant.from_texts(

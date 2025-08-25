@@ -11,7 +11,7 @@ from langchain_core.output_parsers import StrOutputParser
 from langchain_core.runnables import RunnablePassthrough, RunnableLambda
 
 from .loaders import NewsLoader
-from .pipeline import TextChunker, VectorIndexer, RagChain
+from .indexing import TextChunker, VectorIndexer, RagChain
 from .raptor import RaptorSummarizer
 from .persona import get_persona_by_alias, render_prompt_args
 from .vectorstore import auto_qdrant_faiss, as_retriever
