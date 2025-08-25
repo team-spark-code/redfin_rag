@@ -1,5 +1,7 @@
 # src/api_classify.py
+# pip install uvicorn fastapi
 from __future__ import annotations
+import os, uvicorn
 from fastapi import FastAPI, Body, Query
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field
@@ -61,3 +63,17 @@ def classify(
             category_rationale=r["category_rationale"],
         ))
     return resp
+
+if __name__ == "__main__":
+    
+    host = os.getenv("API_HOST", "0.0.0.0")   # 내부만 쓰면 127.0.0.1
+    port = int(os.getenv("API_PORT", "8001"))
+    reload_flag = os.getenv("API_RELOAD", "1") == "1"
+
+    # reload=True를 쓰려면 문자열 경로로 넘겨야 코드 변경 감지에 유리
+    if reload_flag:
+        uvicorn.run("api_classify:app", host=host, port=port, reload=True)
+    else:
+        # 성능상 약간 유리
+        from api_classify import app
+        uvicorn.run(app, host=host, port=port, reload=False)
