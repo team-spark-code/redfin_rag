@@ -24,7 +24,7 @@ from .vectorstore import (
 )
 
 # --- RAPTOR (기본 사용) ---
-from .raptor import raptor_reduce  # 실제 구현이면 여기에 필요한 공개 함수 추가
+from .raptor import raptor_build_and_compress, RaptorParams
 
 # --- RAG chain (LLM 호출) ---
 from .chain import build_rag_chain
@@ -50,7 +50,8 @@ __all__ = [
     "build_embedder",
 
     # RAPTOR
-    "raptor_reduce",
+    "raptor_build_and_compress",
+    "RaptorParams",
 
     # Chain
     "build_rag_chain",

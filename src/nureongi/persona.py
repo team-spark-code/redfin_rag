@@ -11,6 +11,13 @@ try:
     from langchain_core.prompts import PromptTemplate
 except Exception:  # pragma: no cover
     from langchain.prompts import PromptTemplate  # type: ignore
+    
+try:
+    from langchain_core.documents import Document
+except Exception:
+    class Document:  # type: ignore
+        page_content: str
+        metadata: dict
 
 
 class PersonaSlug(str, Enum):
@@ -191,3 +198,45 @@ __all__ = [
     "render_prompt_args",
     "DEFAULT_PROMPT_ARGS",
 ]
+
+def build_persona_prompt_text(
+    persona: str,
+    question: str,
+    docs: List[Document],
+    now: str = "",
+    user_profile: str = "",
+    history: str = "",
+    context_text: str | None = None,   # ← format_ctx가 있으면 외부에서 넘길 수 있도록
+    **overrides,
+) -> str:
+    """
+    persona별 템플릿을 선택해 최종 prompt 문자열을 생성해서 반환.
+    context_text 미지정 시 단순 결합(백업)을 사용.
+    """
+    spec = get_persona_by_alias(persona) or PERSONA_SPECS[PersonaSlug.AI_CURIOUS_PUBLIC]
+
+    # format_ctx가 있으면 chain.py에서 만들어 넣고, 없으면 여기서 백업 생성
+    if context_text is None:
+        parts = []
+        length, max_chars = 0, 6000
+        for d in docs or []:
+            md = getattr(d, "metadata", {}) or {}
+            title = md.get("title") or md.get("headline") or ""
+            src = md.get("source") or md.get("site") or md.get("publisher") or "source"
+            piece = f"- [{src}] {title}\n{d.page_content.strip()}\n\n"
+            if length + len(piece) > max_chars:
+                break
+            parts.append(piece)
+            length += len(piece)
+        context_text = "".join(parts)
+
+    args = render_prompt_args(
+        question=question,
+        context=context_text,
+        user_profile=user_profile,
+        history=history,
+        now=now,
+        role=spec.label,        # COMMON_PREAMBLE의 {role}
+        **overrides,
+    )
+    return spec.template.format(**args)

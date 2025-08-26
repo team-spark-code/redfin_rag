@@ -6,7 +6,10 @@ from typing import Any
 from langchain_core.runnables import RunnablePassthrough, RunnableLambda
 from langchain_core.output_parsers import StrOutputParser
 from langchain_core.prompts import PromptTemplate
+from langchain_core.documents import Document
+from typing import List
 
+from .raptor import raptor_build_and_compress, RaptorParams
 from .format import format_ctx
 from .persona import get_persona_by_alias, render_prompt_args
 
@@ -19,6 +22,8 @@ def _default_llm():
         from langchain_openai import ChatOpenAI
         return ChatOpenAI(model=os.getenv("MODEL_LLM","gpt-4o-mini"), temperature=0)
     raise RuntimeError("No LLM key found. Set GOOGLE_API_KEY or OPENAI_API_KEY.")
+
+RAPTOR_REQUIRED = os.getenv("RAPTOR_REQUIRED", "true").lower() != "false"
 
 def build_rag_chain(
     retriever: Any,
@@ -49,8 +54,22 @@ def build_rag_chain(
             return spec.template.format(**args)
 
     def with_context(x: dict):
-        ctx = format_ctx(retriever.get_relevant_documents(x["question"]))
-        return {"question": x["question"], "context": ctx}
+        # 1) 검색
+        leaf_docs: List[Document] = retriever.get_relevant_documents(x["question"])
+
+        # 2) RAPTOR(필수) — 실패 시에만 leaf 그대로 사용
+        ctx_docs: List[Document]
+        if RAPTOR_REQUIRED:
+            try:
+                ctx_docs = raptor_build_and_compress(leaf_docs, llm=llm, params=RaptorParams())
+            except Exception:
+                ctx_docs = leaf_docs
+        else:
+            ctx_docs = leaf_docs
+
+        # 3) 컨텍스트 문자열 생성(프로젝트의 format_ctx 재사용)
+        ctx_text = format_ctx(ctx_docs)
+        return {"question": x["question"], "context": ctx_text}
 
     chain = (
         {"question": RunnablePassthrough()}
