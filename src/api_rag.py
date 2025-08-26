@@ -12,7 +12,7 @@ from nureongi import PersonaSlug, get_persona_by_alias
 
 load_dotenv(find_dotenv(), override=False)
 
-NEWS_API_URL = os.getenv("NEWS_API_URL", "http://127.0.0.1:8000/news")
+NEWS_API_URL = os.getenv("NEWS_API_URL", "http://192.168.0.123:8000/news/extract")
 EMB_MODEL    = os.getenv("EMB_MODEL", "BAAI/bge-base-en-v1.5")
 SERVICE_NAME = "redfin_target-insight"  # ✅ 서비스명 상수
 
@@ -71,3 +71,12 @@ def redfin_target_insight(req: QueryRequest):
         req_meta=req_meta,
         service_name=SERVICE_NAME,     # LangSmith 프로젝트 매핑에 사용
     )
+    
+if __name__ == "__main__":
+    import uvicorn
+    uvicorn.run(
+        "api_rag:app",
+        host="0.0.0.0",
+        port=int(os.getenv("PORT","8001")),
+        reload=True)
+

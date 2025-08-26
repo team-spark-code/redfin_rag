@@ -56,7 +56,7 @@ def _map_distance_label(distance: str) -> str:
     if d in ("cos", "cosine"):
         return "cosine"
     if d in ("l2", "euclid", "euclidean"):
-        return "l2"
+        return "euclidean"
     if d in ("dot", "ip", "inner"):
         return "dot"
     raise ValueError(f"Unsupported distance: {distance}")
@@ -142,7 +142,7 @@ def _build_faiss_from_texts(
     d = _map_distance_label(distance)
     dist = {
         "cosine": DistanceStrategy.COSINE,
-        "l2": DistanceStrategy.L2,
+        "euclidean": DistanceStrategy.EUCLIDEAN,
         "dot": DistanceStrategy.MAX_INNER_PRODUCT,
     }[d]
 
