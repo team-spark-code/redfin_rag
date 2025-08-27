@@ -1,6 +1,6 @@
 from pathlib import Path
 from typing import List, Dict, Any, Iterable, Optional
-from langchain.schema import Document
+from langchain_core.documents import Document
 import json
 
 # def find_pdf_files(root: Path, pattern: str = "**/*.pdf") -> List[Path]:

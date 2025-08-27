@@ -8,7 +8,7 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 
 # pip install pymupdf faiss-gpu
 from langsmith import Client
-from langchain.schema import Document
+from langchain_core.documents import Document
 from langchain_openai import ChatOpenAI, OpenAIEmbeddings
 from langchain_core.runnables import RunnablePassthrough, RunnableLambda
 from langchain_core.prompts import PromptTemplate

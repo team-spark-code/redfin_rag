@@ -22,7 +22,7 @@ from tqdm import tqdm
 import requests
 from dotenv import load_dotenv, find_dotenv
 
-from langchain.schema import Document
+from langchain_core.documents import Document
 from langchain_community.vectorstores import FAISS
 from langchain_community.vectorstores.faiss import DistanceStrategy
 from langchain_community.embeddings import HuggingFaceBgeEmbeddings

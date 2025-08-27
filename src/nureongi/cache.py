@@ -2,7 +2,7 @@
 import pickle
 from pathlib import Path
 from typing import Optional, Dict, List
-from langchain.schema import Document
+from langchain_core.documents import Document
 
 def load_cache(cache_path: Optional[Path]) -> Dict[str, List[Document]]:
     if not cache_path or not cache_path.exists():

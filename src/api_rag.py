@@ -2,6 +2,7 @@
 import os
 from dataclasses import asdict
 from fastapi import FastAPI
+from fastapi.middleware.cors import CORSMiddleware
 from dotenv import load_dotenv, find_dotenv
 
 from schemas.query import QueryRequest
@@ -18,6 +19,22 @@ SERVICE_NAME = "redfin_target-insight"  # ✅ 서비스명 상수
 
 app = FastAPI(title="Redfin Target Insight API", version="0.1.0")
 
+# 허용할 오리진들 (필요한 것만 넣어도 되고, 개발 중엔 regex로 대충 풀어도 됨)
+ALLOWED_ORIGINS = [
+    "http://localhost:5500",
+    "http://127.0.0.1:5500",
+    "http://localhost:8000",
+    "http://localhost:8001",
+]
+
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=ALLOWED_ORIGINS,      # 또는 allow_origin_regex=r"https?://(localhost|127\.0\.0\.1)(:\d+)?"
+    allow_credentials=False,
+    allow_methods=["*"],                # preflight에서 접근할 메서드 허용
+    allow_headers=["*"],                # Content-Type 등 헤더 허용
+)
+
 @app.on_event("startup")
 def startup_event():
     rag_service.init_index(
@@ -31,12 +48,18 @@ def startup_event():
 
 def resolve_persona(user_persona: str | None) -> str:
     if not user_persona:
-        return "auto"
-    try:
-        slug = get_persona_by_alias(user_persona)
-        return slug.value if isinstance(slug, PersonaSlug) else str(slug)
-    except Exception:
-        return user_persona
+        return "ai_industry_professional"  # 'auto' 대신 기본 슬러그로 고정 권장
+    spec = get_persona_by_alias(user_persona)
+    # spec이 None이면 입력 그대로, 있으면 slug.value 반환
+    return spec.slug.value if spec else user_persona
+
+@app.get("/")  # 루트 확인용
+def root():
+    return {"status": "ok", "see": ["/docs", "/redfin_target-insight"]}
+
+@app.get("/healthz")  # 헬스 체크
+def healthz():
+    return {"ok": True}
 
 @app.post(
     "/redfin_target-insight",

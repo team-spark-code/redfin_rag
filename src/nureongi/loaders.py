@@ -5,7 +5,7 @@ import re, html, hashlib
 import requests
 from requests.adapters import HTTPAdapter
 from urllib3.util.retry import Retry
-from langchain.schema import Document
+from langchain_core.documents import Document
 
 # 기본 매핑: 너희 JSON 구조에 맞춤
 DEFAULT_FIELD_MAP: Dict[str, str] = {
