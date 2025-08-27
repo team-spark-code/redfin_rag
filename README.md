@@ -1,177 +1,331 @@
-# RedFin RAG - 정부 문서 기반 RAG 시스템
+아래 내용을 그대로 `README.md`에 붙여 넣으면 됩니다.
+(현재 레포 스냅샷과 진행·계획을 반영했습니다. 필요 시 포트/엔드포인트/옵션만 바꿔 쓰면 됩니다.)
 
-정부 문서 기반 RAG(Retrieval-Augmented Generation) 시스템으로, PDF 문서로부터 정보를 추출하고 임베딩 및 벡터 데이터베이스를 활용하여 근거 기반 질의응답 기능을 제공합니다.
+---
 
-## 🚀 새로운 아키텍처 (src/ 디렉토리)
+# redfin\_rag — FastAPI 기반 RAG API
+
+AI 관련 기사/문서를 대상으로 **RAG(Retrieval-Augmented Generation)** 파이프라인을 제공하는 백엔드입니다.
+1차 구현 기능은 `redfin_target-insight`이며, 동일 파이프라인 위에 **자동 기사 출간** 기능(`redfin_news`)을 확장할 예정입니다.
+
+---
+
+## 핵심 요약
+
+* **서버**: FastAPI (Uvicorn)
+* **임베딩**: BGE-base (`BAAI/bge-base-en-v1.5`)
+* **VectorStore**: Chroma (기본), 실험용 FAISS 인덱스 보유
+* **Retriever**: `as_retriever(k|fetch_k|lambda_mult|filter)`
+* **LLM**: 프로젝트 .env 설정에 따라 플러그블 (예: OpenAI/Gemini 등)
+* **CORS**: 프론트 로컬 `http://localhost:5500` 접근 허용
+* **주요 엔드포인트**: `POST /redfin_target-insight` (포트 기본 8001)
+
+---
+
+## 디렉터리 구조(발췌)
 
 ```
-redfin_rag/
-├── src/                          # 핵심 RAG 시스템
-│   ├── main.py                   # 메인 실행 파일
-│   ├── nureongi/                 # Nureongi RAG 패키지
-│   │   ├── __init__.py           # 패키지 초기화
-│   │   ├── vectorstore.py        # 벡터스토어 자동 폴백
-│   │   ├── chain.py              # RAG 체인 빌더
-│   │   ├── router.py             # 프롬프트 라우터
-│   │   ├── persona.py            # 페르소나 기반 프롬프트 관리
-│   │   ├── format.py             # 컨텍스트 포맷터
-│   │   ├── loaders.py            # PDF 로더
-│   │   ├── caches.py             # 캐싱 시스템
-│   │   └── utils.py              # 유틸리티 함수
-│   ├── how-to-deal-with-prompts.md # 프롬프트 관리 가이드
-│   ├── which-vector-db-to-use.md # 벡터 DB 선택 가이드
-│   └── note-2025-08-15.md        # 개발 노트
-├── dataset/                      # 원본 PDF 문서
-├── faiss_index/                  # FAISS 벡터 인덱스
-├── output/                       # 테스트 결과 및 출력
-├── scripts/                      # 유틸리티 스크립트
-│   ├── nts_cli.py               # 국세청 크롤러 CLI
-│   └── test_nts_crawler.py      # 크롤러 테스트
-├── docs/                         # 문서화
-├── logs/                         # 로그 디렉토리
-├── requirements.txt              # 의존성
-├── env.example                   # 환경변수 예시
-├── .env                          # 환경변수 (사용자 생성)
-├── .gitignore                    # Git 무시 파일
-├── Dockerfile                    # Docker 설정
-└── README.md                     # 프로젝트 설명
+.
+├─ .env                         # 런타임 환경변수
+├─ .env.example
+├─ Dockerfile
+├─ requirements.txt
+├─ README.md
+├─ docs/                        # 문서/메모
+├─ scripts/                     # 배포/유틸 스크립트
+└─ src/
+   ├─ api_rag.py                # ★ FastAPI 앱(메인) — RAG API 라우트 정의
+   ├─ api_classify.py           # 분류 API(별도, 선택)
+   ├─ categorize_news.py        # 카테고리화 유틸/잡
+   ├─ emb_test.py               # 임베딩 실험 스크립트
+   ├─ main.py                   # 샘플/실험 엔트리
+   ├─ test.py                   # 로컬 테스트
+   ├─ emb_results.csv           # 임베딩 비교 결과(샘플)
+   ├─ which-vector-db-to-use... # 벡터DB 메모
+   ├─ nureongi/                 # RAG 내부 모듈 계층
+   │  ├─ loaders.py             # 파일/피드 로더
+   │  ├─ indexing.py            # 청크/인덱싱 파이프라인
+   │  ├─ vectorstore.py         # Chroma/FAISS 생성/연결
+   │  ├─ chain.py               # 리트리버 + 생성 체인
+   │  └─ raptor.py              # RAPTOR 요약 트리(옵션)
+   ├─ services/                 # 서비스 계층
+   │  ├─ rag_service.py         # ★ RAG 쿼리 실행, 입력 정규화/후처리
+   │  └─ strategy.py            # LLM/임베딩 백엔드 전략
+   ├─ schemas/                  # Pydantic 스키마
+   │  ├─ query.py               # 요청 모델
+   │  └─ response.py            # 응답 모델
+   ├─ news_cat/                 # 도메인 룰/카테고리(실험)
+   ├─ observability/            # 로깅/메트릭 확장 포인트
+   ├─ dataset/                  # 원천 데이터(로컬)
+   ├─ output/                   # 산출물(요약/게시물 등)
+   ├─ cache/                    # 임시 캐시
+   ├─ .chroma/                  # Chroma 퍼시스턴스 디렉터리
+   └─ faiss_index/              # FAISS 인덱스(옵션)
 ```
 
-## 🎭 페르소나 시스템
+> 실제 폴더는 스냅샷에 따라 다를 수 있습니다. 상단 트리는 현재 레포 스크린샷을 기준으로 정리했습니다.
 
-### 7가지 역할별 맞춤 응답
+---
 
-1. **정책입안자** (`gov-policy`): 정부문서/법령 중심 분석
-2. **학술연구** (`acad-research`): 통계/선행연구 중심 분석
-3. **산업동향** (`industry-analyst`): 시장/기술 동향 분석
-4. **예비창업** (`startup-pre`): 규제/지원 정책 안내
-5. **Executive Brief** (`exec-brief`): 전략적 요약
-6. **실무보고** (`staff-report`): 데이터/사례 중심 보고
-7. **대학생 리포트** (`student-ug`): 쉬운 설명과 용어 정의
+## 환경 변수(.env)
 
-## 🛠️ 설치 및 실행
+```dotenv
+# LLM 백엔드
+LLM_BACKEND=gemini            # 예시: openai | gemini | ...
+GEMINI_MODEL=gemini-2.0-flash # 예시
+OPENAI_MODEL=gpt-4o-mini      # 예시
 
-### 1. 환경 설정
+# 임베딩
+EMB_BACKEND=hf
+EMB_MODEL=BAAI/bge-base-en-v1.5
+
+# 서버
+HOST=0.0.0.0
+PORT=8001
+CORS_ALLOW_ORIGINS=http://localhost:5500
+
+# VectorStore
+VECTORSTORE_PROVIDER=chroma   # chroma | faiss
+CHROMA_DIR=./src/.chroma
+FAISS_DIR=./src/faiss_index
+
+# RAPTOR
+RAPTOR_ENABLED=false          # true/false
+RAPTOR_TARGET_K=3
+
+# (선택) DB 로깅
+DB_URL=sqlite:///./rag_logs.db
+```
+
+---
+
+## 실행
+
+### 로컬
+
 ```bash
-# 저장소 클론
-git clone <repository-url>
-cd redfin_rag
-
-# 가상환경 생성 및 활성화
-python -m venv .venv
-source .venv/bin/activate  # Windows: .venv\Scripts\activate
-
-# 의존성 설치
+# venv 준비 후
 pip install -r requirements.txt
-```
 
-### 2. 환경 변수 설정
-```bash
-# .env 파일 생성
-cp env.example .env
+# .env 준비
+cp .env.example .env
+# 필요한 값 채우기
 
-# OpenAI API 키 설정
-OPENAI_API_KEY=your_api_key_here
-```
-
-### 3. 문서 준비
-```bash
-# dataset/ 폴더에 분석할 PDF 파일을 배치
-cp your_documents.pdf dataset/
-```
-
-### 4. 실행
-```bash
-# RAG 시스템 실행
+# 실행
 cd src
-python main.py
+uvicorn api_rag:app --reload --host 0.0.0.0 --port 8001
 ```
 
-## 📊 성능 최적화
+* 헬스체크: `GET http://localhost:8001/healthz`
+* 문서 UI: `GET http://localhost:8001/docs`
 
-### 병렬 처리
-- **PDF 로딩**: 8개 워커로 병렬 처리
-- **임베딩 생성**: 배치 처리 (100개씩)
-- **예외 처리**: 깨진 PDF 자동 스킵
-
-### 캐싱 시스템
-- **PDF 캐시**: pickle 기반 영속화
-- **임베딩 캐시**: 재계산 방지
-- **검색 결과**: MMR로 다양성 확보
-
-### 벡터 검색 최적화
-- **MMR 검색**: k=8, fetch_k=60, lambda_mult=0.25
-- **자동 폴백**: Qdrant → FAISS
-- **메타데이터 필터링**: 출처 기반 필터링
-
-## 🔧 개발 가이드
-
-### 새로운 페르소나 추가
-```python
-# src/nureongi/persona.py에 추가
-class PersonaSlug(Enum):
-    NEW_PERSONA = "new-persona"
-
-# 프롬프트 등록
-PROMPT_REGISTRY[PersonaSlug.NEW_PERSONA] = PromptTemplate.from_template("...")
-```
-
-### 벡터스토어 확장
-```python
-# src/nureongi/vectorstore.py에 새로운 백엔드 추가
-def auto_qdrant_faiss_milvus(...):
-    # Milvus 지원 추가
-    pass
-```
-
-## 📚 학습 자료
-
-### 주요 가이드
-- **프롬프트 관리**: `src/how-to-deal-with-prompts.md`
-- **벡터 DB 선택**: `src/which-vector-db-to-use.md`
-- **개발 노트**: `src/note-2025-08-15.md`
-
-## 📈 모니터링
-
-### LangSmith 통합
-- **실행 추적**: 모든 RAG 체인 실행 로깅
-- **성능 모니터링**: 응답 시간, 토큰 사용량
-- **품질 평가**: RAGAS 메트릭 자동 계산
-
-### 로깅
-```python
-# 메타 로깅 예시
-client.create_run(
-    name="document-summary-run",
-    inputs={"query": query},
-    outputs={"answer": result[:1000]},
-    tags=["RAG", "summary", "frontier-lab"],
-)
-```
-
-## 📈 Docker 실행
+### Docker (선택)
 
 ```bash
-# Docker 이미지 빌드
-docker build -t redfin-rag .
-
-# 컨테이너 실행
-docker run -p 8000:8000 redfin-rag
+docker build -t redfin_rag .
+docker run --env-file .env -p 8001:8001 redfin_rag
 ```
 
-## 🤝 기여
+---
 
-1. Fork the Project
-2. Create your Feature Branch (`git checkout -b feature/AmazingFeature`)
-3. Commit your Changes (`git commit -m 'Add some AmazingFeature'`)
-4. Push to the Branch (`git push origin feature/AmazingFeature`)
-5. Open a Pull Request
+## API
 
-## 📄 라이선스
+### 1) `POST /redfin_target-insight` — RAG 질의 응답
 
-이 프로젝트는 MIT 라이선스 하에 배포됩니다.
+#### Request (JSON)
 
-## 📞 문의
+```json
+{
+  "query": "최근 LLM 경량화 동향을 요약해줘.",
+  "top_k": 5,
+  "fetch_k": 20,
+  "lambda_mult": 0.5,
+  "days": 60,               // (선택) 최근 N일 메타 필터
+  "persona": "auto"         // (선택) 프롬프트 스타일
+}
+```
 
-프로젝트에 대한 문의사항이 있으시면 이슈를 생성해 주세요.
+> 입력은 내부에서 **문자열 강제 정규화**됩니다. (dict로 들어와 AttributeError가 나던 이슈 방지)
 
+#### Response (JSON)
+
+```json
+{
+  "answer": "요약 답변 문자열...",
+  "refs": [
+    {
+      "title": "기사/문서 제목",
+      "url": "https://example.com/article",
+      "score": 0.83,
+      "published_at": "2025-08-15T05:29:50Z"
+    }
+  ],
+  "meta": {
+    "retriever": { "k": 5, "fetch_k": 20, "lambda_mult": 0.5 },
+    "vectorstore": "chroma",
+    "elapsed_ms": 412
+  }
+}
+```
+
+> 참조 URL은 `link → url → guid` 우선순위로 추출하여 `refs`에 포함합니다.
+
+#### curl 테스트
+
+```bash
+curl -X POST "http://localhost:8001/redfin_target-insight" \
+  -H "Content-Type: application/json" \
+  -d '{"query":"RAG 최신 기법 핵심만","top_k":5,"fetch_k":20,"lambda_mult":0.5,"days":60}'
+```
+
+성공 DoD:
+
+* `200 OK`, `answer` 문자열, `refs`에 실제 URL ≥ 1
+* 서버 로그에 `OPTIONS /redfin_target-insight 200` → `POST /redfin_target-insight 200`
+* `get_relevant_documents` Deprecation 경고 없음(→ `retriever.invoke` 사용)
+
+---
+
+### 2) (예정) `POST /redfin_news` — 자동 기사 출간
+
+공통 RAG 파이프라인 위에서 **수집 → 요약/정제 → 태깅 → 게시물 생성**까지 자동화합니다.
+초기 버전은 초안 생성 후 수동 검수 단계를 포함합니다.
+
+#### 계획 요청/응답 스펙(초안)
+
+```json
+// Request
+{
+  "topic": "AI 정책/규제",
+  "days": 3,
+  "target_channel": "blog",   // blog | newsletter | web
+  "style": "briefing"         // headline | briefing | deep-dive
+}
+
+// Response(초안)
+{
+  "post_id": "draft_20250816_001",
+  "title": "이번 주 AI 정책 핵심 5가지",
+  "content_md": "## 1. ...",
+  "tags": ["policy/Regulation","geo/US"],
+  "refs": [{ "title":"...", "url":"..." }]
+}
+```
+
+---
+
+## 프론트엔드 연계
+
+### CORS
+
+* `.env`의 `CORS_ALLOW_ORIGINS`에 프론트 도메인(예: `http://localhost:5500`)을 등록합니다.
+* 프리플라이트(OPTIONS) 200 응답을 보장합니다.
+
+### 일반 요청 (fetch)
+
+```javascript
+async function askRag(q) {
+  const res = await fetch("http://localhost:8001/redfin_target-insight", {
+    method: "POST",
+    headers: {"Content-Type": "application/json"},
+    body: JSON.stringify({ query: q, top_k: 5, fetch_k: 20, lambda_mult: 0.5 })
+  });
+  const data = await res.json();
+  // data.answer / data.refs 사용
+}
+```
+
+### 스트리밍(예정)
+
+두 가지 옵션 중 하나를 채택할 예정입니다.
+
+1. **SSE(Server-Sent Events)**
+
+   * 서버: `text/event-stream`으로 토큰 단위 전송
+   * 클라이언트:
+
+   ```javascript
+   const es = new EventSource("http://localhost:8001/redfin_target-insight/stream?query=...");
+   es.onmessage = (e) => { append(e.data); };
+   es.onerror = () => es.close();
+   ```
+
+2. **Chunked JSON Lines**
+
+   * 서버: `StreamingResponse`로 `{"delta":"..."}\n` 반복 전송
+   * 클라이언트: Fetch + ReadableStream으로 라인 파싱
+
+초기 구현은 **SSE**를 권장합니다(브라우저 호환/간결함).
+
+---
+
+## 로깅/관측(설계)
+
+요청-응답/에러/LLM토큰/리트리버 결과를 DB에 저장해 **재현/품질 추적**에 활용합니다.
+
+* DB: SQLite(로컬) → PostgreSQL(배포)로 이관 가능
+* 테이블 초안:
+
+```sql
+CREATE TABLE api_logs (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  ts DATETIME DEFAULT CURRENT_TIMESTAMP,
+  endpoint TEXT,
+  status INTEGER,
+  query TEXT,
+  answer TEXT,
+  refs_json TEXT,
+  retriever_json TEXT,
+  elapsed_ms INTEGER,
+  error TEXT
+);
+```
+
+* Pydantic 모델은 `schemas/response.py`에 정의, `observability/`에 저장 모듈 확장
+
+---
+
+## 프로맵트 엔지니어링 가이드(요약)
+
+* **입력 정규화**: 질문이 dict/복합형으로 들어와도 내부에서 문자열로 강제 변환
+* **컨텍스트 구성**: `k/fetch_k/lambda_mult` 기본값은 보수적으로, 실패 시 k 축소
+* **안전성**: 금칙어/누설 방지 룰 템플릿화, 역할 프롬프트 최소화
+* **참조 링크 품질**: `link → url → guid` 우선순위, 중복 제거/도메인 화이트리스트(선택)
+
+---
+
+## 개발 체크리스트
+
+* [x] `POST /redfin_target-insight` 동작
+* [x] CORS(5500→8001) 프리플라이트 200
+* [x] Retriever deprecation 대응: `retriever.invoke`
+* [ ] (선택) “최근 N일” 메타 필터
+* [ ] DB 로깅 저장(요청/응답/refs/메트릭)
+* [ ] SSE 스트리밍 응답
+* [ ] `POST /redfin_news` 자동 출간(초안 → 검수 → 게시)
+
+---
+
+## 트러블슈팅 메모
+
+* `AttributeError: ... embed_documents`: 입력이 dict로 들어온 사례. **문자열 강제 변환**으로 해결.
+* `get_relevant_documents` Deprecation: **`retriever.invoke(query)`** 사용.
+* RAPTOR 호출량 제한: `.env`에서 `RAPTOR_ENABLED=false` 또는 `RAPTOR_TARGET_K` 축소.
+
+---
+
+## 라이선스
+
+사내/팀 프로젝트 기준에 따릅니다. 외부 공개 시 라이선스 명시 필요.
+
+---
+
+## 참고
+
+* 임베딩 기본: **BGE-base** (비용/지연/인덱스 크기 균형)
+* VectorStore 기본: **Chroma** (로컬 개발 생산성), 확장 시 Qdrant/Weaviate 고려
+* 프론트엔드 테스트: `http://localhost:5500/test_rag_client.html` (간단 폼에서 POST)
+
+---
+### 업데이트 내역
+- 2025-08-27 : (강충원) api_rag.py로 RAG API 기능 완료 
