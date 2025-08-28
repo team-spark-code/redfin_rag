@@ -1,0 +1,113 @@
+# src/routers/redfin.py
+import time
+from dataclasses import asdict
+from typing import Any, Dict
+
+from fastapi import APIRouter, Request, HTTPException
+from core import settings
+from schemas.query import QueryRequest
+from schemas.response import QueryResponseV1
+from services import rag_service
+from services.strategy import choose_strategy_advanced
+from nureongi import get_persona_by_alias
+from observability.mongo_logger import log_api_event
+
+router = APIRouter(tags=["redfin_target-insight"])
+
+def _resolve_persona(user_persona: str | None) -> str:
+    if not user_persona:
+        return "ai_industry_professional"
+    spec = get_persona_by_alias(user_persona)
+    return spec.slug.value if spec else user_persona
+
+@router.post(
+    "/redfin_target-insight",
+    response_model=QueryResponseV1,
+    summary="RAG 답변 생성 (redfin_target-insight)",
+    description="사용자 입력 프롬프트를 받아 RAG로 인사이트를 생성합니다."
+)
+def redfin_target_insight(req: QueryRequest, request: Request):
+    start = time.perf_counter()
+    plan = choose_strategy_advanced(
+        question=req.question,
+        est_context_tokens=None,
+        k_hint=req.top_k,
+        doc_count_hint=None,
+        token_budget=settings.TOKEN_BUDGET,
+    )
+    rag_service.set_search_kwargs(k=plan.k, fetch_k=plan.fetch_k, lambda_mult=plan.lambda_mult)
+
+    persona_slug = _resolve_persona(req.persona)
+    strategy = plan.strategy if req.strategy == "auto" else req.strategy
+
+    req_meta: Dict[str, Any] = {
+        "service": settings.SERVICE_NAME,
+        "question": req.question,
+        "top_k": plan.k,
+        "fetch_k": plan.fetch_k,
+        "lambda_mult": plan.lambda_mult,
+        "plan": asdict(plan),
+    }
+
+    try:
+        resp = rag_service.run_query(
+            question=req.question,
+            persona=persona_slug,
+            strategy=strategy,
+            user_id=(req.user_id or "notuser"),
+            req_meta=req_meta,
+            service_name=settings.SERVICE_NAME,
+        )
+        elapsed_ms = int((time.perf_counter() - start) * 1000)
+
+        try:
+            envelope = resp.dict() if hasattr(resp, "dict") else resp
+            log_api_event(
+                envelope=envelope,
+                status=200,
+                endpoint=str(request.url.path),
+                error=None,
+                extra={
+                    "elapsed_ms": elapsed_ms,
+                    "host": getattr(request.client, "host", None),
+                    "service": settings.SERVICE_NAME,
+                },
+            )
+        except Exception as log_err:
+            print(f"[warn] Mongo log failed: {log_err}")
+
+        return resp
+
+    except Exception as e:
+        try:
+            log_api_event(
+                envelope={
+                    "version": "v1",
+                    "data": {
+                        "answer": {"text": "", "bullets": None, "format": "markdown"},
+                        "persona": None,
+                        "strategy": None,
+                        "sources": [],
+                    },
+                    "meta": {
+                        "user": {"user_id": req.user_id or "notuser", "session_id": None},
+                        "request": {
+                            "service": settings.SERVICE_NAME,
+                            "question": req.question,
+                            "top_k": plan.k,
+                            "fetch_k": plan.fetch_k,
+                            "lambda_mult": plan.lambda_mult,
+                            "plan": asdict(plan),
+                        },
+                        "pipeline": None,
+                    },
+                },
+                status=500,
+                endpoint=str(request.url.path),
+                error=str(e),
+                extra={"service": settings.SERVICE_NAME},
+            )
+        except Exception as log_err:
+            print(f"[warn] Mongo log failed on error: {log_err}")
+
+        raise HTTPException(status_code=500, detail="internal error")
