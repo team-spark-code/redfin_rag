@@ -1,9 +1,11 @@
 # src/core/app.py
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
+
 from core import settings
 from core.lifespan import lifespan
 from routers.redfin import router as redfin_router
+from routers.news import router as news_router
 
 def create_app() -> FastAPI:
     app = FastAPI(
@@ -29,4 +31,6 @@ def create_app() -> FastAPI:
         return {"ok": True}
 
     app.include_router(redfin_router)
+    app.include_router(news_router)
+    
     return app

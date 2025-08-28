@@ -1,139 +1,3 @@
-# # nureongi/raptor.py
-# from __future__ import annotations
-# from typing import List, Optional
-# import math
-# import numpy as np
-
-# try:
-#     import umap
-#     from sklearn.cluster import AgglomerativeClustering
-# except Exception as e:
-#     raise ImportError(
-#         "RAPTOR 의존성이 없습니다. `pip install umap-learn scikit-learn numpy` 후 다시 시도하세요."
-#     ) from e
-
-# from langchain_core.documents import Document
-# from .vectorstore import build_embedder
-
-
-# def _estimate_n_clusters(n_docs: int) -> int:
-#     # 문서 수가 적으면 그대로 반환
-#     if n_docs < 20:
-#         return max(1, n_docs)
-#     # √N 휴리스틱, 2~50 사이로 클램프
-#     k = int(round(math.sqrt(n_docs)))
-#     return max(2, min(50, k))
-
-
-# def _cosine_sim(a: np.ndarray, b: np.ndarray) -> float:
-#     na = np.linalg.norm(a) + 1e-9
-#     nb = np.linalg.norm(b) + 1e-9
-#     return float(np.dot(a, b) / (na * nb))
-
-
-# def raptor_reduce(
-#     docs: List[Document],
-#     n_neighbors: Optional[int] = None,
-#     n_components: int = 10,
-#     n_clusters: Optional[int] = None,
-#     limit_reps: Optional[int] = 200,
-# ) -> List[Document]:
-#     """
-#     UMAP + HAC로 군집 대표 문서를 선택해 축약 반환.
-#     - 입력: 원본 Document 리스트(요약문 중심; 제목 누수 없음 가정)
-#     - 출력: 대표 문서들(원본 Document; payload/metadata 보존)
-
-#     Args:
-#         n_neighbors: UMAP 이웃 수. None이면 min(50, N-1).
-#         n_components: UMAP 차원 수.
-#         n_clusters: 군집 수. None이면 √N 휴리스틱.
-#         limit_reps: 대표 문서 상한. None이면 제한 없음.
-#     """
-#     N = len(docs)
-#     if N == 0:
-#         return []
-#     if N < 8:
-#         # 데이터 적으면 그대로 반환
-#         return docs
-
-#     # 1) 임베딩
-#     emb = build_embedder()
-#     X = emb.embed_documents([d.page_content for d in docs])  # List[List[float]]
-#     X = np.asarray(X, dtype=np.float32)
-
-#     # 2) 차원 축소 (UMAP)
-#     n_neighbors = n_neighbors or max(5, min(50, N - 1))
-#     reducer = umap.UMAP(
-#         n_neighbors=n_neighbors,
-#         n_components=n_components,
-#         metric="cosine",
-#         random_state=42,
-#         verbose=False,
-#     )
-#     Z = reducer.fit_transform(X)  # (N, n_components)
-
-#     # 3) 클러스터링 (HAC, 유클리드 공간에서 동작)
-#     n_clusters = n_clusters or _estimate_n_clusters(N)
-#     n_clusters = max(1, min(n_clusters, N))
-#     hac = AgglomerativeClustering(n_clusters=n_clusters, affinity="euclidean", linkage="ward")
-#     labels = hac.fit_predict(Z)  # (N,)
-
-#     # 4) 클러스터 대표 선택(centroid에 가장 가까운 문서)
-#     reps: List[Document] = []
-#     for c in range(n_clusters):
-#         idx = np.where(labels == c)[0]
-#         if idx.size == 0:
-#             continue
-#         # 클러스터 중심(임베딩 공간에서 평균)
-#         centroid = X[idx].mean(axis=0)
-#         # 코사인 유사도 기준 대표 선택
-#         best_i = None
-#         best_sim = -1.0
-#         for i in idx:
-#             sim = _cosine_sim(X[i], centroid)
-#             if sim > best_sim:
-#                 best_sim = sim
-#                 best_i = i
-#         if best_i is not None:
-#             reps.append(docs[int(best_i)])
-
-#     # 5) 상한 적용
-#     if limit_reps is not None and len(reps) > limit_reps:
-#         reps = reps[:limit_reps]
-
-#     return reps
-
-# def raptor_tree_reduce(
-#     docs: List[Document],
-#     levels: int = 1,
-#     per_level_limit: Optional[int] = 200,
-#     n_neighbors: Optional[int] = None,
-#     n_components: int = 10,
-#     n_clusters: Optional[int] = None,
-# ) -> List[Document]:
-#     """
-#     raptor_reduce(1단계 축약)를 levels 번 반복 적용.
-#     - levels <= 1 이면 1단계만 수행.
-#     - per_level_limit: 매 레벨 대표 상한(속도/품질 밸런싱)
-#     - n_neighbors/n_components/n_clusters: 각 레벨에 동일 적용
-#     """
-#     cur = docs
-#     if not cur or levels <= 0:
-#         return cur
-
-#     for _ in range(max(1, levels)):
-#         nxt = raptor_reduce(
-#             cur,
-#             n_neighbors=n_neighbors,
-#             n_components=n_components,
-#             n_clusters=n_clusters,
-#             limit_reps=per_level_limit,
-#         )
-#         # 수렴 실패 방지: 변화 없으면 중단
-#         if not nxt or len(nxt) >= len(cur):
-#             break
-#         cur = nxt
-#     return cur
 # nureongi/raptor.py
 from __future__ import annotations
 from dataclasses import dataclass
@@ -187,28 +51,17 @@ def _cluster_and_pick(
     n_clusters: Optional[int] = None,
     per_cluster_topm: int = 6,
 ) -> Tuple[List[List[int]], List[int], Dict[int, List[int]]]:
-    """
-    UMAP 차축소 → HAC 군집 → 각 클러스터에서 대표 1개 + 상위 M개 인덱스 반환
-    Returns:
-        clusters: 각 클러스터의 문서 인덱스 리스트
-        reps: 각 클러스터 대표 문서 인덱스 리스트
-        tops: {cluster_idx: [상위 M개 문서 인덱스]}
-    """
     N = X.shape[0]
-    n_neighbors = n_neighbors or max(5, min(50, N - 1))
-    reducer = umap.UMAP(
-        n_neighbors=n_neighbors,
-        n_components=n_components,
-        metric="cosine",
-        random_state=42,
-        verbose=False,
-    )
-    Z = reducer.fit_transform(X)  # (N, n_components)
+    # n_neighbors 상한/하한 안전화
+    nn = n_neighbors or max(5, min(50, N - 1))
+    nn = max(2, min(nn, N - 1))
+    # UMAP 안전 호출 (random_state=None → n_jobs 경고 제거)
+    Z = _safe_umap(X, n_neighbors=nn, n_components=n_components, random_state=None, metric="cosine")
 
     n_clusters = n_clusters or _estimate_n_clusters(N)
     n_clusters = max(1, min(n_clusters, N))
-    hac = AgglomerativeClustering(n_clusters=n_clusters, linkage="ward")  # euclidean 내부 가정
-    labels = hac.fit_predict(Z)  # (N,)
+    hac = AgglomerativeClustering(n_clusters=n_clusters, linkage="ward")
+    labels = hac.fit_predict(Z)
 
     clusters: List[List[int]] = []
     reps: List[int] = []
@@ -218,7 +71,6 @@ def _cluster_and_pick(
         idx = np.where(labels == c)[0].tolist()
         if not idx:
             continue
-        # 대표 = 임베딩 공간 평균에 가장 가까운(코사인)
         centroid = X[idx].mean(axis=0)
         best_i, best_sim = None, -1.0
         for i in idx:
@@ -226,8 +78,6 @@ def _cluster_and_pick(
             if sim > best_sim:
                 best_sim, best_i = sim, i
         reps.append(int(best_i))  # type: ignore
-
-        # 상위 M개(코사인 기준 내림차순)
         scored = sorted(idx, key=lambda i: _cosine_sim(X[i], centroid), reverse=True)
         tops[c] = scored[: max(1, per_cluster_topm)]
         clusters.append(idx)
@@ -324,3 +174,19 @@ def raptor_build_and_compress(
         # 다음 레벨 입력으로 요약문들을 사용 → 새로 임베딩
         cur_docs = summary_docs
         cur_X = np.asarray(emb.embed_documents([d.page_content for d in cur_docs]), dtype=np.float32)
+
+# ----------------- 보조: 안전한 UMAP 적용 -----------------
+def _safe_umap(X, *, n_neighbors: int = 15, n_components: int = 2, random_state=None, metric: str = "cosine"):
+    X = np.asarray(X)
+    n = int(X.shape[0]) if hasattr(X, "shape") else 0
+    if n < 4:
+        return X[:, :min(n_components, X.shape[1])] if getattr(X, "ndim", 1) == 2 else X
+    nn = max(2, min(int(n_neighbors), n - 1))
+    nc = max(1, min(int(n_components), n - 1))
+    return umap.UMAP(
+        n_neighbors=nn,
+        n_components=nc,
+        random_state=random_state,  # None → "n_jobs overridden" 경고 제거
+        metric=metric,              # 기본 cosine (기존 동작 보존)
+        verbose=False,
+    ).fit_transform(X)

@@ -6,6 +6,7 @@ import requests
 from requests.adapters import HTTPAdapter
 from urllib3.util.retry import Retry
 from langchain_core.documents import Document
+from datetime import datetime, timezone
 
 # 기본 매핑: 너희 JSON 구조에 맞춤
 DEFAULT_FIELD_MAP: Dict[str, str] = {
@@ -19,6 +20,15 @@ DEFAULT_FIELD_MAP: Dict[str, str] = {
     "tags": "tags",             # 태그
     "lang": "language",         # 언어 ("ENGLISH" 등)
 }
+
+def _to_epoch(s: Optional[str]) -> Optional[float]:
+    if not s:
+        return None
+    try:
+        s = s.replace("Z", "+00:00")
+        return datetime.fromisoformat(s).timestamp()
+    except Exception:
+        return None
 
 def _strip_html(s: str) -> str:
     s = re.sub(r"<[^>]+>", " ", s or "")
@@ -117,6 +127,7 @@ class NewsLoader:
                 "url": self._map_field(it, "url"),
                 "guid": self._map_field(it, "id"),
                 "published_at": self._map_field(it, "published_at"),
+                "published_at_ts": _to_epoch(self._map_field(it, "published_at")),
                 "authors": self._map_field(it, "authors"),
                 "tags": self._map_field(it, "tags"),
                 "title": title,

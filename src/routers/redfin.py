@@ -1,9 +1,11 @@
 # src/routers/redfin.py
-import time
+from time import perf_counter
+from uuid import uuid4
+from datetime import datetime, timezone
 from dataclasses import asdict
 from typing import Any, Dict
-
 from fastapi import APIRouter, Request, HTTPException
+
 from core import settings
 from schemas.query import QueryRequest
 from schemas.response import QueryResponseV1
@@ -27,7 +29,9 @@ def _resolve_persona(user_persona: str | None) -> str:
     description="사용자 입력 프롬프트를 받아 RAG로 인사이트를 생성합니다."
 )
 def redfin_target_insight(req: QueryRequest, request: Request):
-    start = time.perf_counter()
+    request_received_at = datetime.now(timezone.utc)
+    start = perf_counter()
+
     plan = choose_strategy_advanced(
         question=req.question,
         est_context_tokens=None,
@@ -58,18 +62,51 @@ def redfin_target_insight(req: QueryRequest, request: Request):
             req_meta=req_meta,
             service_name=settings.SERVICE_NAME,
         )
-        elapsed_ms = int((time.perf_counter() - start) * 1000)
+
+        elapsed_ms = int((perf_counter() - start) * 1000)
+        response_generated_at = datetime.now(timezone.utc)
 
         try:
+            # 응답을 dict로 변환
             envelope = resp.dict() if hasattr(resp, "dict") else resp
+
+            # answer 텍스트 길이/간단 메타 추출 (스키마: QueryResponseV1 기준)
+            answer_text = ""
+            try:
+                if isinstance(envelope, dict):
+                    data = envelope.get("data") or {}
+                    ans = data.get("answer") or {}
+                    answer_text = ans.get("text") or ""
+            except Exception:
+                pass
+
             log_api_event(
                 envelope=envelope,
                 status=200,
                 endpoint=str(request.url.path),
                 error=None,
                 extra={
-                    "elapsed_ms": elapsed_ms,
-                    "host": getattr(request.client, "host", None),
+                    "request_received_at": request_received_at.isoformat(),
+                    "response_generated_at": response_generated_at.isoformat(),
+                    "duration_ms": elapsed_ms,
+                    "client": {
+                        "ip": getattr(request.client, "host", None),
+                        "user_agent": request.headers.get("user-agent"),
+                        "origin": request.headers.get("origin"),
+                    },
+                    "request_meta": {
+                        "persona": persona_slug,
+                        "strategy": strategy,
+                        "top_k": plan.k,
+                        "fetch_k": plan.fetch_k,
+                        "lambda_mult": plan.lambda_mult,
+                        "user_id": req.user_id or "notuser",
+                    },
+                    "answer_meta": {
+                        "chars": len(answer_text),
+                        # 토큰 카운트가 필요하면 토크나이저 연동 후 주입
+                        "tokens": None,
+                    },
                     "service": settings.SERVICE_NAME,
                 },
             )
@@ -105,7 +142,11 @@ def redfin_target_insight(req: QueryRequest, request: Request):
                 status=500,
                 endpoint=str(request.url.path),
                 error=str(e),
-                extra={"service": settings.SERVICE_NAME},
+                extra={
+                    "request_received_at": request_received_at.isoformat(),
+                    "response_generated_at": datetime.now(timezone.utc).isoformat(),
+                    "service": settings.SERVICE_NAME,
+                },
             )
         except Exception as log_err:
             print(f"[warn] Mongo log failed on error: {log_err}")
