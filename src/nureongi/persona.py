@@ -28,6 +28,7 @@ class PersonaSlug(str, Enum):
     AI_CONTENT_CREATOR = "ai_content_creator"
     AI_STUDENT_RESEARCHER = "ai_student_researcher"
     AI_INVESTOR_VC = "ai_investor_vc"
+    NEWS_INSIGHT_BASE = "news_insight_base"
 
 
 @dataclass(frozen=True)
@@ -141,6 +142,48 @@ PERSONA_SPECS: Mapping[PersonaSlug, PersonaSpec] = {
         ),
         aliases=["투자자","벤처캐피털","vc","투자"]
     ),
+    PersonaSlug.NEWS_INSIGHT_BASE: PersonaSpec(
+        slug=PersonaSlug.NEWS_INSIGHT_BASE, label="기본 인사이트(사건·이슈·트렌드)", version="v1",
+        template=_tmpl(
+            """
+출력 지시(마크다운):
+- 최상단 제목 1개(`# 제목`), 질문·컨텍스트를 반영해 **간결하게 이름짓기**.
+- 이어서 `## Issue List` 섹션을 만들고, **3~5개 이슈**를 불릿으로 나열.
+  - 각 이슈 불릿 형식:
+    - `- **이슈명**: 한 줄 요약`
+    - `  - 왜 중요한가:` 해당 이슈의 산업/기술/정책 상 **의미·영향**을 1~2문장으로.
+    - `  - 근거:` 컨텍스트에 있는 **수치/사실/사례**를 1문장으로. 가능하면 간단한 출처 표기.
+- 구분선 `---` 추가.
+- 이어서 `## Trend` 섹션을 만들고, **3~4문장**으로 장기 방향성 요약:
+  - (1) 변화의 방향(가속/감속, 표준화/파편화, 중앙화/탈중앙 등)
+  - (2) 견인 요인(기술·규제·자본·생태계)
+  - (3) 위험/제약(윤리·보안·비용·데이터)
+  - (4) 예상되는 **다음 단계**나 체크포인트 1개
+- 과도한 추론 금지: 컨텍스트 밖 주장은 금지하고 **"추가 근거 필요"**로 표기.
+- 필요 시 간단 인용: (기관/연도) 또는 [원문] 링크명 정도의 짧은 표기.
+
+형식 예시(가이드, 그대로 복붙 금지):
+# <핵심 주제 자동 생성 제목>
+
+## Issue List
+- **나노 바나나 이미지 모델 공개**: 초거대 멀티모달의 경량화 사례.
+  - 왜 중요한가: 이미지 모델의 **일관성/안정성** 문제가 완화되어 생성 품질의 하한선이 상승.
+  - 근거: 공개 벤치마크에서 재현성 지표 ↑, 추론 비용 ↓ (원문/벤치 인용)
+- **경량 모델-서빙 스택 최적화**: 엣지/온프레시 채택 가속.
+  - 왜 중요한가: 대규모 API 비용 의존도를 낮추고 규제·데이터주권 요구에 유리.
+  - 근거: TCO 비교, 추론지연(ms) 개선 수치 (출처)
+
+---
+
+## Trend
+- 경량-안정 멀티모달의 **보편화**가 진행되며, 엣지 배치와 사내 데이터 결합 수요가 동시 확대된다.
+- 벤더 종속 위험을 낮추는 아키텍처로의 **전환**이 관찰되며, 표준화 경쟁이 격화될 전망이다.
+- 규제·윤리 이슈는 **데이터 거버넌스**와 안전성 검증을 필수 모듈로 끌어올린다.
+- 단기 체크포인트: 공개 벤치 업데이트 주기, 서드파티 재현 리포트 양과 품질.
+"""
+        ),
+        aliases=["auto","default","기본","news_base","insight_base"]
+    ),
 }
 
 # -------- 별칭 -> 슬러그 역매핑 및 헬퍼 --------
@@ -148,6 +191,9 @@ ALIAS_TO_SLUG: Dict[str, PersonaSlug] = {}
 for spec in PERSONA_SPECS.values():
     for a in spec.aliases + [spec.slug.value]:
         ALIAS_TO_SLUG[a.lower()] = spec.slug
+
+# 빈 문자열 대응: persona 미지정 시도 대비
+ALIAS_TO_SLUG[""] = PersonaSlug.NEWS_INSIGHT_BASE
 
 def get_persona_by_alias(alias_or_slug: str) -> Optional[PersonaSpec]:
     key = (alias_or_slug or "").lower().strip()
@@ -160,7 +206,7 @@ DEFAULT_PROMPT_ARGS = {
     "require_citations": "가능한 경우 반드시",
     "output_format": "markdown",
     "length_hint": "간결하지만 정보밀도 높게",
-    "max_bullets": "5",
+    "max_bullets": "7",
     "reading_level": "중급(비전공자도 이해)",
     "locale": "ko-KR",
     "date_cutoff": "최근 6~12개월 최우선",
@@ -213,7 +259,7 @@ def build_persona_prompt_text(
     persona별 템플릿을 선택해 최종 prompt 문자열을 생성해서 반환.
     context_text 미지정 시 단순 결합(백업)을 사용.
     """
-    spec = get_persona_by_alias(persona) or PERSONA_SPECS[PersonaSlug.AI_CURIOUS_PUBLIC]
+    spec = get_persona_by_alias(persona) or PERSONA_SPECS[PersonaSlug.NEWS_INSIGHT_BASE]
 
     # format_ctx가 있으면 chain.py에서 만들어 넣고, 없으면 여기서 백업 생성
     if context_text is None:

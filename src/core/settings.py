@@ -7,7 +7,7 @@ load_dotenv(find_dotenv(), override=False)
 NEWS_API_URL = os.getenv("NEWS_API_URL", "http://192.168.0.123:8000/news/extract")
 EMB_MODEL    = os.getenv("EMB_MODEL", "BAAI/bge-base-en-v1.5")
 HOST         = os.getenv("HOST", "0.0.0.0")
-PORT         = int(os.getenv("PORT", "8001"))
+PORT         = int(os.getenv("PORT", "8030"))
 TOKEN_BUDGET = int(os.getenv("TOKEN_BUDGET", "3500"))
 
 ALLOWED_ORIGINS = [

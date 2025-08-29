@@ -1,0 +1,354 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+  <meta charset="UTF-8"/>
+  <meta name="viewport" content="width=device-width, initial-scale=1.0"/>
+  <title>AI 뉴스 분석 — persona 테스트</title>
+  <style>
+    :root{
+      --bg:#ffffff; --text:#0e1116; --muted:#667085; --line:#e5e7eb; --brand:#3b82f6; --panel:#ffffff;
+      --shadow:0 8px 24px rgba(16,24,40,.06); --bubble:#f8fafc; --bubble-user:#e9f2ff;
+    }
+    *{box-sizing:border-box}
+    body{margin:0;background:var(--bg);color:var(--text);
+      font-family:ui-sans-serif,system-ui,-apple-system,"Segoe UI",Roboto,"Apple SD Gothic Neo","Noto Sans KR",Arial}
+    header{padding:20px 24px;border-bottom:1px solid var(--line);background:var(--panel);position:sticky;top:0;z-index:10}
+    .wrap{max-width:1180px;margin:0 auto}
+    h1{margin:0;font-weight:700;font-size:18px}
+    .sub{color:var(--muted);font-size:13px;margin-top:6px}
+
+    /* Search */
+    .searchbar{display:flex;gap:10px;align-items:center;margin:18px 0;flex-wrap:wrap}
+    .persona-select{position:relative;display:flex;align-items:center;gap:10px}
+    .persona-trigger{
+      width:38px;height:38px;border-radius:999px;border:1px solid var(--line);background:#fff;
+      display:inline-flex;align-items:center;justify-content:center;font-size:20px;line-height:1;cursor:pointer;
+      box-shadow:var(--shadow);
+    }
+    .persona-menu{
+      position:absolute;top:110%;left:0;width:360px;background:var(--panel);border:1px solid var(--line);
+      border-radius:12px;box-shadow:var(--shadow);display:none;max-height:280px;overflow:auto
+    }
+    .persona-item{padding:10px 12px;cursor:pointer;border-bottom:1px solid #f2f4f7}
+    .persona-item:last-child{border-bottom:0}
+    .persona-item:hover{background:#f8fafc}
+    .chip{display:none;background:#eef2ff;color:#3730a3;padding:6px 10px;border-radius:999px;font-size:12px;border:1px solid #e0e7ff}
+    .query{flex:1;display:flex;gap:8px;min-width:280px}
+    .query input{flex:1;padding:12px 14px;border:1px solid var(--line);border-radius:12px;background:#fff;outline:none}
+    .btn{padding:11px 16px;border-radius:12px;border:1px solid #1d4ed8;background:var(--brand);color:#fff;font-weight:600;cursor:pointer}
+    .btn:disabled{opacity:.6;cursor:default}
+    .status{margin-left:8px;font-size:12px;color:var(--muted)}
+
+    /* Main layout */
+    main{padding:20px 24px}
+    .grid{display:grid;grid-template-columns:340px 1fr;gap:16px}
+    @media (max-width: 980px){.grid{grid-template-columns:1fr}}
+    .card{background:var(--panel);border:1px solid var(--line);border-radius:14px;box-shadow:var(--shadow)}
+    .card h2{margin:0 0 12px 0;font-size:16px}
+    .card .content{padding:16px}
+
+    .list{list-style:none;margin:0;padding:0}
+    .item{padding:12px;border-bottom:1px solid #f2f4f7}
+    .item:last-child{border-bottom:0}
+    .item .rank{display:inline-flex;align-items:center;justify-content:center;width:22px;height:22px;border-radius:6px;background:#eef2ff;color:#4338ca;font-size:12px;margin-right:8px}
+    .item .title{font-weight:600}
+    .item .meta{font-size:12px;color:var(--muted);margin-top:4px}
+
+    /* Chat */
+    .tabs{display:flex;gap:8px;margin-bottom:12px;flex-wrap:wrap}
+    .tab{padding:6px 10px;border-radius:10px;border:1px solid var(--line);background:#fff;font-size:12px;white-space:nowrap}
+    .tab.active{background:#eff6ff;border-color:#bfdbfe}
+    .muted{color:var(--muted);font-size:12px}
+
+    .chat{display:flex;flex-direction:column;gap:14px;max-height:65vh;overflow:auto;scroll-behavior:smooth}
+    .msg{display:flex;gap:10px}
+    .msg.assistant{justify-content:flex-start}
+    .msg.user{justify-content:flex-end}
+    .avatar{width:28px;height:28px;border-radius:999px;background:#e5e7eb;flex:0 0 28px}
+    .bubble{
+      max-width:min(780px, 100%);
+      padding:12px 14px;border:1px solid var(--line);border-radius:14px;background:var(--bubble);
+      overflow-wrap:anywhere; /* 긴 단어 줄바꿈 */
+      line-height:1.55;  /* 줄 간격 자연스럽게 */
+    }
+    .msg.user .bubble{background:var(--bubble-user);border-color:#cfe1ff}
+    .bubble h1,.bubble h2,.bubble h3{margin:.6em 0 .3em}  /* 헤딩 간격 축소 */
+    .bubble p{margin:.5em 0}
+    .bubble pre{background:#f5f7fa;color:#0e1116;border-radius:10px;padding:10px;overflow:auto;max-width:100%}
+    .bubble code{background:#f3f4f6;padding:2px 4px;border-radius:6px}
+    .bubble ul,.bubble ol{margin:.4em 0 .6em .9em}
+    .bubble a{color:#1d4ed8;text-decoration:none}
+
+    details.refbox{margin-top:8px;border-top:1px dashed #e5e7eb;padding-top:8px}
+    .raw{background:#f5f7fa;color:#0e1116;border:1px solid #e5e7eb;border-radius:10px;padding:10px;overflow:auto}
+
+    /* Prevent right-edge clipping globally */
+    .content, .bubble{overflow-x:auto}
+  </style>
+</head>
+<body>
+<header>
+  <div class="wrap">
+    <h1>AI 뉴스 분석</h1>
+    <div class="sub">페르소나를 선택하고 궁금한 주제를 입력하면 AI가 맞춤형 뉴스 분석을 제공합니다</div>
+
+    <div class="searchbar">
+      <div class="persona-select">
+        <!-- + 버튼 -->
+        <button id="personaBtn" class="persona-trigger" type="button" aria-haspopup="listbox" aria-expanded="false" title="페르소나 선택">+</button>
+        <div class="persona-menu" id="personaMenu" role="listbox" tabindex="-1" aria-label="페르소나 목록">
+          <div class="persona-item" data-value="ai_curious_public">AI 관심 있는 일반인 · 쉬운 설명</div>
+          <div class="persona-item" data-value="ai_industry_professional">AI 산업 종사자 · 기술/비즈 통합</div>
+          <div class="persona-item" data-value="ai_interested_official">AI 관심 있는 공무원 · 정책/규제</div>
+          <div class="persona-item" data-value="ai_startup_ceo">AI 스타트업 CEO · 시장/투자</div>
+          <div class="persona-item" data-value="ai_content_creator">AI 정보 크리에이터 · 트렌드/자료</div>
+          <div class="persona-item" data-value="ai_student_researcher">AI 학생/연구자 · 논문/연구</div>
+          <div class="persona-item" data-value="ai_investor_vc">AI 투자자/VC · 지표/리스크</div>
+        </div>
+        <!-- 선택 전에는 보이지 않음 -->
+        <span class="chip" id="personaChip" aria-live="polite"></span>
+      </div>
+
+      <div class="query" style="flex:1;">
+        <input id="question" placeholder="분석하고 싶은 주제를 입력하세요 (예: 최근 이미지 모델 이슈 정리해줘)"/>
+        <button id="analyzeBtn" class="btn" type="button">분석하기</button>
+        <span id="status" class="status">대기 중</span>
+      </div>
+    </div>
+  </div>
+</header>
+
+<main>
+  <div class="wrap">
+    <div class="grid">
+      <!-- 좌측: 관련 기사(더미) -->
+      <section class="card">
+        <div class="content">
+          <h2>관련 기사</h2>
+          <ul class="list" id="newsList"></ul>
+          <p class="muted">※ 현재는 더미 데이터입니다. 크롤러/피드 연동 전까지 UI 확인용으로 사용하세요.</p>
+        </div>
+      </section>
+
+      <!-- 우측: 챗봇 영역 -->
+      <section class="card">
+        <div class="content">
+          <div class="tabs">
+            <div class="tab active" id="tabPersona"><span id="personaBadge" style="display:none;"></span><span id="defaultBadge">기본 페르소나</span> 분석 결과</div>
+            <div class="tab" id="tabRecent">최근 실행</div>
+          </div>
+
+          <div id="chat" class="chat" aria-live="polite">
+            <!-- 초기 안내 메시지 -->
+            <div class="msg assistant">
+              <div class="avatar" aria-hidden="true"></div>
+              <div class="bubble">
+                분석을 시작하려면 상단 입력창에 주제를 입력하고 <strong>분석하기</strong>를 눌러주세요.
+              </div>
+            </div>
+          </div>
+        </div>
+      </section>
+    </div>
+  </div>
+</main>
+
+<script>
+  // 기본 설정
+  const BASE_URL = "http://localhost:8030";
+  const ENDPOINT = "/redfin_target-insight";
+
+  // 라벨 맵
+  const PERSONA_LABEL = {
+    ai_curious_public: "AI 관심 있는 일반인",
+    ai_industry_professional: "AI 산업 종사자",
+    ai_interested_official: "AI 관심 있는 공무원",
+    ai_startup_ceo: "AI 스타트업 CEO",
+    ai_content_creator: "AI 정보 크리에이터",
+    ai_student_researcher: "AI 학생/연구자",
+    ai_investor_vc: "AI 투자자/VC",
+  };
+
+  // DOM 헬퍼
+  const $ = (q)=>document.querySelector(q);
+  const $$ = (q)=>Array.from(document.querySelectorAll(q));
+
+  const personaBtn = $("#personaBtn");
+  const personaMenu = $("#personaMenu");
+  const personaChip = $("#personaChip");
+  const personaBadge = $("#personaBadge");
+  const defaultBadge = $("#defaultBadge");
+  const statusEl = $("#status");
+  const analyzeBtn = $("#analyzeBtn");
+  const questionEl = $("#question");
+  const newsList = $("#newsList");
+  const chatEl = $("#chat");
+
+  // 선택 전: 빈 값 → 백엔드 기본 페르소나 사용
+  let currentPersona = "";
+
+  // 더미 기사
+  function renderDummyNews(){
+    const dummy = [
+      { title:"인공지능 기술의 새로운 돌파구, 차세대 언어 모델 발표", meta:"관련도 높음 · 2시간 전" },
+      { title:"경제 전망: 2025년 성장률을 좌우할 변수들", meta:"관련도 보통 · 1일 전" },
+      { title:"환경 보호를 위한 새로운 정책 발표, 탄소 목표 앞당겨", meta:"관련도 보통 · 3일 전" },
+      { title:"K-콘텐츠 글로벌 확산, 생성형 AI와 협업 사례 증가", meta:"관련도 낮음 · 5일 전" },
+    ];
+    newsList.innerHTML = "";
+    dummy.forEach((d,i)=>{
+      const li = document.createElement("li");
+      li.className = "item";
+      li.innerHTML = `<span class="rank">${i+1}</span><span class="title">${d.title}</span><div class="meta">${d.meta}</div>`;
+      newsList.appendChild(li);
+    });
+  }
+  renderDummyNews();
+
+  // 페르소나 드롭다운
+  personaBtn.addEventListener("click", ()=>{
+    const on = personaMenu.style.display === "block";
+    personaMenu.style.display = on ? "none" : "block";
+    personaBtn.setAttribute("aria-expanded", String(!on));
+  });
+  document.addEventListener("click", (e)=>{
+    if(!personaBtn.contains(e.target) && !personaMenu.contains(e.target)){
+      personaMenu.style.display = "none";
+      personaBtn.setAttribute("aria-expanded","false");
+    }
+  });
+  $$("#personaMenu .persona-item").forEach(item=>{
+    item.addEventListener("click", ()=>{
+      currentPersona = item.dataset.value || "";
+      const label = PERSONA_LABEL[currentPersona] || "";
+      // 표시 업데이트 (선택 전에는 비표시)
+      if(label){
+        personaChip.textContent = label;
+        personaChip.style.display = "inline-block";
+        personaBadge.textContent = label;
+        personaBadge.style.display = "inline";
+        defaultBadge.style.display = "none";
+      }
+      personaMenu.style.display = "none";
+      personaBtn.setAttribute("aria-expanded","false");
+    });
+  });
+
+  // 상태
+  function setLoading(v){
+    analyzeBtn.disabled = v;
+    statusEl.textContent = v ? "요청 중…" : "대기 중";
+  }
+
+  // Markdown 경량 렌더러
+  function escapeHtml(s){return s.replace(/[&<>"]/g, ch=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[ch]||ch));}
+  function renderMarkdown(md){
+    if(!md || typeof md!=="string") return "";
+    // 코드블록
+    md = md.replace(/```(\w+)?\n([\s\S]*?)```/g, (_,lang,code)=>`<pre><code>${escapeHtml(code)}</code></pre>`);
+    // 인라인 코드
+    md = md.replace(/`([^`]+)`/g, (_,code)=>`<code>${escapeHtml(code)}</code>`);
+    // 굵게/기울임
+    md = md.replace(/\*\*([^*]+)\*\*/g,"<strong>$1</strong>");
+    md = md.replace(/\*([^*]+)\*/g,"<em>$1</em>");
+    // 헤더
+    md = md.replace(/^###\s+(.*)$/gm,"<h3>$1</h3>");
+    md = md.replace(/^##\s+(.*)$/gm,"<h2>$1</h2>");
+    md = md.replace(/^#\s+(.*)$/gm,"<h1>$1</h1>");
+    // 리스트
+    md = md.replace(/^\s*\d+\.\s+(.+)$/gm,"<li>$1</li>");
+    md = md.replace(/(<li>[\s\S]*?<\/li>)(?![\s\S]*<\/ol>)/g, "<ol>$1</ol>");
+    md = md.replace(/^\s*[-*]\s+(.+)$/gm,"<li>$1</li>");
+    md = md.replace(/(<li>[\s\S]*?<\/li>)(?![\s\S]*<\/ul>)/g, "<ul>$1</ul>");
+    // 링크
+    md = md.replace(/\[([^\]]+)\]\((https?:\/\/[^\s)]+)\)/g, `<a href="$2" target="_blank" rel="noopener noreferrer">$1</a>`);
+    // 단락
+    const blocks = md.split(/\n{2,}/).map(b=>{
+      if(/^\s*<(h\d|ul|ol|pre|blockquote)/.test(b)) return b;
+      if(b.trim().startsWith("<li>")) return b;
+      return `<p>${b.replace(/\n/g,"<br/>")}</p>`;
+    });
+    return blocks.join("\n");
+  }
+
+  // 응답 파싱
+  function extractAnswer(json){
+    if(!json) return "";
+    if(json.data && json.data.answer && typeof json.data.answer.text==="string") return json.data.answer.text;
+    if(typeof json.answer==="string") return json.answer;
+    if(typeof json.summary==="string") return json.summary;
+    if(json.data && typeof json.data==="string") return json.data;
+    return "";
+  }
+  function extractRefs(json){
+    if(!json) return [];
+    if(json.data && Array.isArray(json.data.sources)){
+      return json.data.sources.map(s => (typeof s==="string" ? s : (s.url||s.link||""))).filter(Boolean);
+    }
+    if(Array.isArray(json.refs)) return json.refs;
+    if(Array.isArray(json.references)) return json.references;
+    return [];
+  }
+
+  // 채팅 메시지 유틸
+  function addUserMessage(text){
+    const m = document.createElement("div");
+    m.className = "msg user";
+    m.innerHTML = `<div class="bubble">${escapeHtml(text)}</div><div class="avatar" aria-hidden="true"></div>`;
+    chatEl.appendChild(m);
+    chatEl.scrollTop = chatEl.scrollHeight;
+  }
+  function addAssistantMessage(html, refs=[], rawObj=null){
+    const m = document.createElement("div");
+    m.className = "msg assistant";
+    const refsHtml = refs.length
+      ? `<details class="refbox"><summary class="muted">참고 링크</summary><ul>${refs.map(u=>`<li><a href="${u}" target="_blank" rel="noopener noreferrer">${u}</a></li>`).join("")}</ul></details>`
+      : "";
+    const rawHtml = rawObj
+      ? `<details class="refbox"><summary class="muted">Raw JSON</summary><pre class="raw">${escapeHtml(JSON.stringify(rawObj,null,2))}</pre></details>`
+      : "";
+    m.innerHTML = `<div class="avatar" aria-hidden="true"></div><div class="bubble">${html}${refsHtml}${rawHtml}</div>`;
+    chatEl.appendChild(m);
+    chatEl.scrollTop = chatEl.scrollHeight;
+  }
+
+  // 호출
+  async function runQuery(){
+    const q = questionEl.value.trim();
+    if(!q){ alert("주제를 입력하세요."); return; }
+
+    addUserMessage(q);
+    setLoading(true);
+    try{
+      const res = await fetch(`${BASE_URL}${ENDPOINT}`, {
+        method:"POST",
+        headers:{ "Content-Type":"application/json" },
+        body: JSON.stringify({
+          question: q,
+          persona: currentPersona || "",   // 선택 전에는 빈 값 → 기본 페르소나
+          strategy: "auto",
+          top_k: 8
+        })
+      });
+      const text = await res.text();
+      let json; try{ json = JSON.parse(text); } catch{ json = { _raw: text }; }
+      const body = renderMarkdown(extractAnswer(json)) || "<p>(응답 본문 없음)</p>";
+      const refs = extractRefs(json);
+      addAssistantMessage(body, refs, json);
+    }catch(e){
+      addAssistantMessage("<p>(네트워크 에러)</p>", [], { error:String(e) });
+    }finally{
+      setLoading(false);
+    }
+  }
+
+  analyzeBtn.addEventListener("click", ()=>{
+    renderDummyNews();
+    runQuery();
+  });
+  questionEl.addEventListener("keydown", (e)=>{
+    if(e.key === "Enter"){ e.preventDefault(); analyzeBtn.click(); }
+  });
+</script>
+</body>
+</html>
