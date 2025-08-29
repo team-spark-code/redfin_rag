@@ -1,17 +1,13 @@
-# persona.py
-# 통합 페르소나 레지스트리 (실서비스+RAG 최적화)
+# 수정: 템플릿 하드코딩 제거 → .md 파일 로딩/조립 방식으로 변경
 from __future__ import annotations
 
+import os
+from pathlib import Path
 from dataclasses import dataclass
 from enum import Enum
 from typing import Dict, List, Mapping, Optional
 
-# LC 0.2+ 우선 사용, 하위호환 fallback
-try:
-    from langchain_core.prompts import PromptTemplate
-except Exception:  # pragma: no cover
-    from langchain.prompts import PromptTemplate  # type: ignore
-    
+# langchain 호환
 try:
     from langchain_core.documents import Document
 except Exception:
@@ -19,7 +15,21 @@ except Exception:
         page_content: str
         metadata: dict
 
+# ===== 경로/캐시 =====
+PROMPTS_DIR = Path(__file__).resolve().parent.parent / "prompts"
+SYSTEM_INSIGHT_PATH = PROMPTS_DIR / "system_insight.md"
 
+_FILE_CACHE: Dict[Path, str] = {}
+def _read(path: Path) -> str:
+    if not path.exists():
+        return ""
+    if path in _FILE_CACHE:
+        return _FILE_CACHE[path]
+    txt = path.read_text(encoding="utf-8")
+    _FILE_CACHE[path] = txt
+    return txt
+
+# ===== 페르소나 정의 =====
 class PersonaSlug(str, Enum):
     AI_CURIOUS_PUBLIC = "ai_curious_public"
     AI_INDUSTRY_PROFESSIONAL = "ai_industry_professional"
@@ -28,30 +38,95 @@ class PersonaSlug(str, Enum):
     AI_CONTENT_CREATOR = "ai_content_creator"
     AI_STUDENT_RESEARCHER = "ai_student_researcher"
     AI_INVESTOR_VC = "ai_investor_vc"
-    NEWS_INSIGHT_BASE = "news_insight_base"
-
+    NEWS_INSIGHT_BASE = "news_insight_base"  # 빈값 기본
 
 @dataclass(frozen=True)
 class PersonaSpec:
     slug: PersonaSlug
     label: str
     version: str
-    template: PromptTemplate
+    delta_path: Path
     aliases: List[str]
 
+PERSONA_SPECS: Mapping[PersonaSlug, PersonaSpec] = {
+    PersonaSlug.AI_CURIOUS_PUBLIC: PersonaSpec(
+        slug=PersonaSlug.AI_CURIOUS_PUBLIC,
+        label="AI 관심 있는 일반인",
+        version="v1",
+        delta_path=PROMPTS_DIR / "personas" / "ai_curious_public.md",
+        aliases=["일반인","대중","ai초보","호기심"],
+    ),
+    PersonaSlug.AI_INDUSTRY_PROFESSIONAL: PersonaSpec(
+        slug=PersonaSlug.AI_INDUSTRY_PROFESSIONAL,
+        label="AI 산업 종사자",
+        version="v1",
+        delta_path=PROMPTS_DIR / "personas" / "ai_industry_professional.md",
+        aliases=["산업","종사자","엔지니어","ai전문가","기술자"],
+    ),
+    PersonaSlug.AI_INTERESTED_OFFICIAL: PersonaSpec(
+        slug=PersonaSlug.AI_INTERESTED_OFFICIAL,
+        label="AI 관심 있는 공무원",
+        version="v1",
+        delta_path=PROMPTS_DIR / "personas" / "ai_interested_official.md",
+        aliases=["공무원","정책","공공","행정"],
+    ),
+    PersonaSlug.AI_STARTUP_CEO: PersonaSpec(
+        slug=PersonaSlug.AI_STARTUP_CEO,
+        label="AI 스타트업 CEO",
+        version="v1",
+        delta_path=PROMPTS_DIR / "personas" / "ai_startup_ceo.md",
+        aliases=["ceo","창업자","스타트업","ai비즈니스"],
+    ),
+    PersonaSlug.AI_CONTENT_CREATOR: PersonaSpec(
+        slug=PersonaSlug.AI_CONTENT_CREATOR,
+        label="AI 정보 크리에이터",
+        version="v1",
+        delta_path=PROMPTS_DIR / "personas" / "ai_content_creator.md",
+        aliases=["크리에이터","콘텐츠","유튜버","인플루언서"],
+    ),
+    PersonaSlug.AI_STUDENT_RESEARCHER: PersonaSpec(
+        slug=PersonaSlug.AI_STUDENT_RESEARCHER,
+        label="대학(원)생·연구자",
+        version="v1",
+        delta_path=PROMPTS_DIR / "personas" / "ai_student_researcher.md",
+        aliases=["연구자","대학생","대학원생","학술"],
+    ),
+    PersonaSlug.AI_INVESTOR_VC: PersonaSpec(
+        slug=PersonaSlug.AI_INVESTOR_VC,
+        label="투자자·VC",
+        version="v1",
+        delta_path=PROMPTS_DIR / "personas" / "ai_investor_vc.md",
+        aliases=["투자자","벤처캐피털","vc","투자"],
+    ),
+    PersonaSlug.NEWS_INSIGHT_BASE: PersonaSpec(
+        slug=PersonaSlug.NEWS_INSIGHT_BASE,
+        label="기본 인사이트(사건·이슈·트렌드)",
+        version="v1",
+        delta_path=Path(),  # 델타 없음
+        aliases=["auto","default","기본","news_base","insight_base",""],
+    ),
+}
 
-# ---------- 공통 규칙(모든 페르소나 상단에 삽입) ----------
+ALIAS_TO_SLUG: Dict[str, PersonaSlug] = {}
+for spec in PERSONA_SPECS.values():
+    for a in spec.aliases + [spec.slug.value]:
+        ALIAS_TO_SLUG[a.lower()] = spec.slug
+# 빈 문자열 대응
+ALIAS_TO_SLUG[""] = PersonaSlug.NEWS_INSIGHT_BASE
+
+def get_persona_by_alias(alias_or_slug: str) -> Optional[PersonaSpec]:
+    key = (alias_or_slug or "").lower().strip()
+    slug = ALIAS_TO_SLUG.get(key)
+    return PERSONA_SPECS.get(slug) if slug else None
+
+# ===== 공통 프리엠블(메타) =====
 COMMON_PREAMBLE = """역할: {role}
 운영규칙:
-- 컨텍스트 우선 사용: {use_context_only}. 컨텍스트 밖 주장 금지, 불충분하면 "추가 근거 필요"로 명시.
-- 인용: {require_citations}. 가능한 경우 (출처/기관/연도/링크) 표기.
-- 출력형식: {output_format}. 글자수/길이 기준: {length_hint}. 불릿 최대 {max_bullets}개.
-- 독자 수준: {reading_level}, 로케일: {locale}, 날짜 기준: {now} (자료 최신성 cutoff: {date_cutoff}).
+- 컨텍스트 우선: {use_context_only}. 컨텍스트 밖 주장은 금지, 불충분하면 "추가 근거 필요".
+- 인용: {require_citations}. (출처/기관/연도/링크) 권장.
+- 출력형식: {output_format}. 길이: {length_hint}. 불릿 최대 {max_bullets}개.
+- 독자 수준: {reading_level}, 로케일: {locale}, 기준시각: {now} (최신성 기준: {date_cutoff})
 - 개인정보/편향/오정보 주의, 명확·간결·검증가능성 준수.
-- 사용자 프로필(요약 가능): {user_profile}
-
-[대화 히스토리 요약]
-{history}
 
 [질문]
 {question}
@@ -60,147 +135,6 @@ COMMON_PREAMBLE = """역할: {role}
 {context}
 """
 
-# ---------- 페르소나별 본문 스펙 ----------
-def _tmpl(body: str) -> PromptTemplate:
-    return PromptTemplate.from_template(COMMON_PREAMBLE + "\n" + body.strip() + "\n")
-
-PERSONA_SPECS: Mapping[PersonaSlug, PersonaSpec] = {
-    PersonaSlug.AI_CURIOUS_PUBLIC: PersonaSpec(
-        slug=PersonaSlug.AI_CURIOUS_PUBLIC, label="AI 관심 있는 일반인", version="v2",
-        template=_tmpl(
-            """출력:
-1) 주제 개요(2~3문장, 쉬운 설명)
-2) 핵심 포인트 불릿(실생활 예시 포함)
-3) 오해 주의/윤리적 고려 1줄
-4) 더 알아보기(공신력 있는 자료 2~3개)"""
-        ),
-        aliases=["일반인","대중","ai초보","호기심"]
-    ),
-    PersonaSlug.AI_INDUSTRY_PROFESSIONAL: PersonaSpec(
-        slug=PersonaSlug.AI_INDUSTRY_PROFESSIONAL, label="AI 산업 종사자", version="v2",
-        template=_tmpl(
-            """출력:
-1) 기술·제품 개요(핵심 스택/아키텍처)
-2) 최신 동향/도구 3~5 불릿(수치·벤치마크·레퍼런스)
-3) 적용 가이드(데이터/배포/리스크 요약)
-4) 참고 리소스(논문/레포/레퍼런스 구현)"""
-        ),
-        aliases=["산업","종사자","엔지니어","기술자","ai전문가"]
-    ),
-    PersonaSlug.AI_INTERESTED_OFFICIAL: PersonaSpec(
-        slug=PersonaSlug.AI_INTERESTED_OFFICIAL, label="AI 관심 있는 공무원", version="v2",
-        template=_tmpl(
-            """출력:
-1) 정책적 개요(사회·경제 영향 2문장)
-2) 법·제도/윤리 이슈 불릿(국내외 비교, 근거 표기)
-3) 정책옵션(장단·영향·이해관계자)
-4) 추가 검토자료(정부/국제기구 링크)"""
-        ),
-        aliases=["공무원","정책","공공","행정"]
-    ),
-    PersonaSlug.AI_STARTUP_CEO: PersonaSpec(
-        slug=PersonaSlug.AI_STARTUP_CEO, label="AI 스타트업 CEO", version="v2",
-        template=_tmpl(
-            """출력:
-1) 핵심 이슈(시장/경쟁/타이밍)
-2) 전략 옵션 3가지(고객세그/포지셔닝/모델)
-3) 리스크·규제 체크리스트
-4) 액션 아이템(다음 2주 실행계획, KPI)"""
-        ),
-        aliases=["ceo","창업자","스타트업","ai비즈니스"]
-    ),
-    PersonaSlug.AI_CONTENT_CREATOR: PersonaSpec(
-        slug=PersonaSlug.AI_CONTENT_CREATOR, label="AI 정보 크리에이터", version="v2",
-        template=_tmpl(
-            """출력:
-1) 콘텐츠 각색 포인트(훅/스토리라인)
-2) 포맷 제안(숏폼/캐러셀/뉴스레터)별 핵심 메시지
-3) 시각화/데모 아이디어
-4) 참고 소스(팩트체크 가능한 원문)"""
-        ),
-        aliases=["크리에이터","콘텐츠","유튜버","인플루언서"]
-    ),
-    PersonaSlug.AI_STUDENT_RESEARCHER: PersonaSpec(
-        slug=PersonaSlug.AI_STUDENT_RESEARCHER, label="대학(원)생·연구자", version="v2",
-        template=_tmpl(
-            """출력:
-1) 연구 배경 및 문제정의
-2) 핵심 개념·식/알고리즘 요약(간단 정의 포함)
-3) SOTA/비교 결과 요점(표현식·수치·데이터셋)
-4) 재현 가이드(코드/데이터/평가절차)와 참고문헌(3+)"""
-        ),
-        aliases=["연구자","대학생","대학원생","학술"]
-    ),
-    PersonaSlug.AI_INVESTOR_VC: PersonaSpec(
-        slug=PersonaSlug.AI_INVESTOR_VC, label="투자자·VC", version="v2",
-        template=_tmpl(
-            """출력:
-1) 시장 개요(규모/성장률/구조)
-2) 투자 인사이트 불릿(라운드/수익모델/차별화/리스크)
-3) 경쟁 지형 스냅샷(대표 기업 3~5, 강약점 한줄씩)
-4) 듀딜 포인트(기술/규제/거버넌스)"""
-        ),
-        aliases=["투자자","벤처캐피털","vc","투자"]
-    ),
-    PersonaSlug.NEWS_INSIGHT_BASE: PersonaSpec(
-        slug=PersonaSlug.NEWS_INSIGHT_BASE, label="기본 인사이트(사건·이슈·트렌드)", version="v1",
-        template=_tmpl(
-            """
-출력 지시(마크다운):
-- 최상단 제목 1개(`# 제목`), 질문·컨텍스트를 반영해 **간결하게 이름짓기**.
-- 이어서 `## Issue List` 섹션을 만들고, **3~5개 이슈**를 불릿으로 나열.
-  - 각 이슈 불릿 형식:
-    - `- **이슈명**: 한 줄 요약`
-    - `  - 왜 중요한가:` 해당 이슈의 산업/기술/정책 상 **의미·영향**을 1~2문장으로.
-    - `  - 근거:` 컨텍스트에 있는 **수치/사실/사례**를 1문장으로. 가능하면 간단한 출처 표기.
-- 구분선 `---` 추가.
-- 이어서 `## Trend` 섹션을 만들고, **3~4문장**으로 장기 방향성 요약:
-  - (1) 변화의 방향(가속/감속, 표준화/파편화, 중앙화/탈중앙 등)
-  - (2) 견인 요인(기술·규제·자본·생태계)
-  - (3) 위험/제약(윤리·보안·비용·데이터)
-  - (4) 예상되는 **다음 단계**나 체크포인트 1개
-- 과도한 추론 금지: 컨텍스트 밖 주장은 금지하고 **"추가 근거 필요"**로 표기.
-- 필요 시 간단 인용: (기관/연도) 또는 [원문] 링크명 정도의 짧은 표기.
-
-형식 예시(가이드, 그대로 복붙 금지):
-# <핵심 주제 자동 생성 제목>
-
-## Issue List
-- **나노 바나나 이미지 모델 공개**: 초거대 멀티모달의 경량화 사례.
-  - 왜 중요한가: 이미지 모델의 **일관성/안정성** 문제가 완화되어 생성 품질의 하한선이 상승.
-  - 근거: 공개 벤치마크에서 재현성 지표 ↑, 추론 비용 ↓ (원문/벤치 인용)
-- **경량 모델-서빙 스택 최적화**: 엣지/온프레시 채택 가속.
-  - 왜 중요한가: 대규모 API 비용 의존도를 낮추고 규제·데이터주권 요구에 유리.
-  - 근거: TCO 비교, 추론지연(ms) 개선 수치 (출처)
-
----
-
-## Trend
-- 경량-안정 멀티모달의 **보편화**가 진행되며, 엣지 배치와 사내 데이터 결합 수요가 동시 확대된다.
-- 벤더 종속 위험을 낮추는 아키텍처로의 **전환**이 관찰되며, 표준화 경쟁이 격화될 전망이다.
-- 규제·윤리 이슈는 **데이터 거버넌스**와 안전성 검증을 필수 모듈로 끌어올린다.
-- 단기 체크포인트: 공개 벤치 업데이트 주기, 서드파티 재현 리포트 양과 품질.
-"""
-        ),
-        aliases=["auto","default","기본","news_base","insight_base"]
-    ),
-}
-
-# -------- 별칭 -> 슬러그 역매핑 및 헬퍼 --------
-ALIAS_TO_SLUG: Dict[str, PersonaSlug] = {}
-for spec in PERSONA_SPECS.values():
-    for a in spec.aliases + [spec.slug.value]:
-        ALIAS_TO_SLUG[a.lower()] = spec.slug
-
-# 빈 문자열 대응: persona 미지정 시도 대비
-ALIAS_TO_SLUG[""] = PersonaSlug.NEWS_INSIGHT_BASE
-
-def get_persona_by_alias(alias_or_slug: str) -> Optional[PersonaSpec]:
-    key = (alias_or_slug or "").lower().strip()
-    slug = ALIAS_TO_SLUG.get(key)
-    return PERSONA_SPECS.get(slug) if slug else None
-
-# -------- 체인 바인딩 시 기본 파라미터(노브) 제공 유틸 --------
 DEFAULT_PROMPT_ARGS = {
     "use_context_only": "true",
     "require_citations": "가능한 경우 반드시",
@@ -220,10 +154,6 @@ def render_prompt_args(
     now: str = "",
     **overrides,
 ) -> dict:
-    """
-    PromptTemplate.format에 바로 전달할 dict 생성.
-    공통 knobs를 기본값으로 채우고 overrides로 덮어씁니다.
-    """
     args = dict(DEFAULT_PROMPT_ARGS)
     args.update({
         "question": question,
@@ -235,6 +165,57 @@ def render_prompt_args(
     args.update(overrides or {})
     return args
 
+def build_persona_prompt_text(
+    persona: str,
+    question: str,
+    docs: List[Document],
+    now: str = "",
+    user_profile: str = "",
+    history: str = "",
+    context_text: str | None = None,
+    **overrides,
+) -> str:
+    """
+    수정: system_insight.md(공통 형식) + persona 델타(.md) + 공통 프리엠블 + 질문/컨텍스트를 조립해 최종 프롬프트 문자열 반환
+    """
+    spec = get_persona_by_alias(persona) or PERSONA_SPECS[PersonaSlug.NEWS_INSIGHT_BASE]
+
+    # 컨텍스트 백업 구성(너무 길지 않게)
+    if context_text is None:
+        parts, length, limit = [], 0, 6000
+        for d in docs or []:
+            md = getattr(d, "metadata", {}) or {}
+            title = md.get("title") or md.get("headline") or ""
+            src = md.get("source") or md.get("site") or md.get("publisher") or "source"
+            piece = f"- [{src}] {title}\n{(d.page_content or '').strip()}\n\n"
+            if length + len(piece) > limit:
+                break
+            parts.append(piece)
+            length += len(piece)
+        context_text = "".join(parts)
+
+    system_prompt = _read(SYSTEM_INSIGHT_PATH).strip()
+    delta_prompt = _read(spec.delta_path).strip() if spec.delta_path else ""
+
+    args = render_prompt_args(
+        question=question,
+        context=context_text or "",
+        user_profile=user_profile,
+        history=history,
+        now=now,
+        role=spec.label,
+        **overrides,
+    )
+
+    # 조립 순서: [공통 프리엠블] + [공통 시스템 프롬프트] + [페르소나 델타]
+    full = (
+        COMMON_PREAMBLE.format(**args)
+        + "\n\n"
+        + system_prompt
+        + ("\n\n" + delta_prompt if delta_prompt else "")
+    )
+    return full
+
 __all__ = [
     "PersonaSlug",
     "PersonaSpec",
@@ -243,46 +224,5 @@ __all__ = [
     "get_persona_by_alias",
     "render_prompt_args",
     "DEFAULT_PROMPT_ARGS",
+    "build_persona_prompt_text",
 ]
-
-def build_persona_prompt_text(
-    persona: str,
-    question: str,
-    docs: List[Document],
-    now: str = "",
-    user_profile: str = "",
-    history: str = "",
-    context_text: str | None = None,   # ← format_ctx가 있으면 외부에서 넘길 수 있도록
-    **overrides,
-) -> str:
-    """
-    persona별 템플릿을 선택해 최종 prompt 문자열을 생성해서 반환.
-    context_text 미지정 시 단순 결합(백업)을 사용.
-    """
-    spec = get_persona_by_alias(persona) or PERSONA_SPECS[PersonaSlug.NEWS_INSIGHT_BASE]
-
-    # format_ctx가 있으면 chain.py에서 만들어 넣고, 없으면 여기서 백업 생성
-    if context_text is None:
-        parts = []
-        length, max_chars = 0, 6000
-        for d in docs or []:
-            md = getattr(d, "metadata", {}) or {}
-            title = md.get("title") or md.get("headline") or ""
-            src = md.get("source") or md.get("site") or md.get("publisher") or "source"
-            piece = f"- [{src}] {title}\n{d.page_content.strip()}\n\n"
-            if length + len(piece) > max_chars:
-                break
-            parts.append(piece)
-            length += len(piece)
-        context_text = "".join(parts)
-
-    args = render_prompt_args(
-        question=question,
-        context=context_text,
-        user_profile=user_profile,
-        history=history,
-        now=now,
-        role=spec.label,        # COMMON_PREAMBLE의 {role}
-        **overrides,
-    )
-    return spec.template.format(**args)

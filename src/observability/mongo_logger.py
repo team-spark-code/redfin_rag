@@ -130,6 +130,7 @@ def ensure_collections() -> None:
         db[logs_name].create_index([("extra.request_meta.user_id", 1), ("created_at", -1)])
         db[logs_name].create_index([("extra.client.ip", 1), ("created_at", -1)])
         db[logs_name].create_index([("extra.duration_ms", -1), ("created_at", -1)])
+        db[logs_name].create_index([("extra.retrieval.raptor_applied", 1), ("created_at", -1)])
     except Exception:
         pass
     news_name = news_collection_name()
