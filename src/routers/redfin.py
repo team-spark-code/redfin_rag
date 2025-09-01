@@ -38,7 +38,7 @@ def redfin_target_insight(req: QueryRequest, request: Request):
         est_context_tokens=None,
         k_hint=req.top_k,
         doc_count_hint=None,
-        token_budget=settings.TOKEN_BUDGET,
+        token_budget=settings.app.token_budget,
     )
     rag_service.set_search_kwargs(k=plan.k, fetch_k=plan.fetch_k, lambda_mult=plan.lambda_mult)
 
@@ -46,7 +46,7 @@ def redfin_target_insight(req: QueryRequest, request: Request):
     strategy = plan.strategy if req.strategy == "auto" else req.strategy
 
     req_meta: Dict[str, Any] = {
-        "service": settings.SERVICE_NAME,
+        "service": settings.app.service_name,
         "question": req.question,
         "top_k": plan.k,
         "fetch_k": plan.fetch_k,
@@ -61,7 +61,7 @@ def redfin_target_insight(req: QueryRequest, request: Request):
             strategy=strategy,
             user_id=(req.user_id or "notuser"),
             req_meta=req_meta,
-            service_name=settings.SERVICE_NAME,
+            service_name=settings.app.service_name,
         )
 
         elapsed_ms = int((perf_counter() - start) * 1000)
@@ -116,7 +116,7 @@ def redfin_target_insight(req: QueryRequest, request: Request):
                         # 토큰 카운트가 필요하면 토크나이저 연동 후 주입
                         "tokens": None,
                     },
-                    "service": settings.SERVICE_NAME,
+                    "service": settings.app.service_name,
                 },
             )
         except Exception as log_err:
@@ -138,7 +138,7 @@ def redfin_target_insight(req: QueryRequest, request: Request):
                     "meta": {
                         "user": {"user_id": req.user_id or "notuser", "session_id": None},
                         "request": {
-                            "service": settings.SERVICE_NAME,
+                            "service": settings.app.service_name,
                             "question": req.question,
                             "top_k": plan.k,
                             "fetch_k": plan.fetch_k,
@@ -154,7 +154,7 @@ def redfin_target_insight(req: QueryRequest, request: Request):
                 extra={
                     "request_received_at": request_received_at.isoformat(),
                     "response_generated_at": datetime.now(timezone.utc).isoformat(),
-                    "service": settings.SERVICE_NAME,
+                    "service": settings.app.service_name,
                     # NEW: 에러 상황에서도 RAPTOR 메타 남기기
                     "retrieval": {
                         "raptor_required": bool(RAPTOR_REQUIRED),

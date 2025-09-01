@@ -9,14 +9,14 @@ from routers.news import router as news_router
 
 def create_app() -> FastAPI:
     app = FastAPI(
-        title="Redfin Target Insight API",
+        title=settings.app.service_name,
         version="0.1.0",
         lifespan=lifespan,
     )
 
     app.add_middleware(
         CORSMiddleware,
-        allow_origins=settings.ALLOWED_ORIGINS,
+        allow_origins=settings.app.allowed_origins or ["*"],
         allow_credentials=False,
         allow_methods=["*"],
         allow_headers=["*"],

@@ -20,9 +20,12 @@ PROMPTS_DIR = Path(__file__).resolve().parent.parent / "prompts"
 SYSTEM_INSIGHT_PATH = PROMPTS_DIR / "system_insight.md"
 
 _FILE_CACHE: Dict[Path, str] = {}
-def _read(path: Path) -> str:
-    if not path.exists():
+# (추가할 코드) ← 파일만 읽고, None/미존재/디렉터리는 빈 문자열
+def _read(path: Optional[Path]) -> str:
+    if not path:
         return ""
+    if not path.exists() or path.is_dir():
+        return ""                      # 델타가 없거나 잘못 주입되면 조용히 빈 문자열
     if path in _FILE_CACHE:
         return _FILE_CACHE[path]
     txt = path.read_text(encoding="utf-8")
@@ -45,7 +48,7 @@ class PersonaSpec:
     slug: PersonaSlug
     label: str
     version: str
-    delta_path: Path
+    delta_path: Optional[Path]  # 델타 프롬프트 파일 경로 (없을 수도 있음)
     aliases: List[str]
 
 PERSONA_SPECS: Mapping[PersonaSlug, PersonaSpec] = {
@@ -102,7 +105,7 @@ PERSONA_SPECS: Mapping[PersonaSlug, PersonaSpec] = {
         slug=PersonaSlug.NEWS_INSIGHT_BASE,
         label="기본 인사이트(사건·이슈·트렌드)",
         version="v1",
-        delta_path=Path(),  # 델타 없음
+        delta_path=None,  # 델타 없음
         aliases=["auto","default","기본","news_base","insight_base",""],
     ),
 }

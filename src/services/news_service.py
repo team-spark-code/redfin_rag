@@ -1,10 +1,10 @@
 # src/services/news_service.py
 # ----------------------------------------------------------------------
 # 변경 요약
-# - NewsLoader(기존 nureongi/loaders.py) 직접 사용 → 피드 로딩/매핑/정규화 일원화
-# - publish_from_feed/publish_from_env → 내부적으로 publish_from_loader 호출
-# - generate_news_post: run_query_news(RAPTOR OFF) 사용, feed 메타는 model_meta.feed에 저장
-# - 중복 판단: guid/article_code/url 우선, 없으면 doc_id 보조
+# - 프롬프트: prompts.news.build_news_prompt 제거 → .md 템플릿 로더 사용
+# - 한국어 보증 유틸/후처리: 전부 주석 처리(영어 그대로 응답). 추후 주석 해제 시 즉시 재활성화 가능
+# - 나머지 퍼블리시 플로우/중복 판정/Loader 연계는 기존대로 유지
+#   (Loader → generate_news_post → Mongo 저장)
 # ----------------------------------------------------------------------
 
 import os
@@ -14,49 +14,74 @@ import re
 from uuid import uuid4
 from typing import Any, Dict, Optional, List
 
-from prompts.news import build_news_prompt
+# 기존 파이썬 템플릿 제거
+# from prompts.news import build_news_prompt
+
 from schemas.news import NewsPublishRequest, NewsPost
 from schemas.news_llm import NewsLLMOut
 from services import rag_service
 from observability.mongo_logger import get_news_collection
 from nureongi.loaders import NewsLoader, DEFAULT_FIELD_MAP
 
-# ===== 한국어 보증 유틸 =====
-_HANGUL_RE = re.compile(r"[가-힣ㄱ-ㅎㅏ-ㅣ]")  # (한글 탐지 정규식)
+# 추가: .md 템플릿 로더
+from core.settings import settings
+from nureongi.prompt_loader import load_md_template, render_template
 
-def _has_hangul_ratio(s: str, min_ratio: float = 0.10) -> bool:
-    """응답이 한국어인지 간단 비율로 판정"""
-    if not s:
-        return False
-    letters = [ch for ch in s if ch.isalpha() or '\uac00' <= ch <= '\ud7a3' or '\u3131' <= ch <= '\u318E']
-    if not letters:
-        return False
-    hanguls = _HANGUL_RE.findall(s)
-    return (len(hanguls) / max(1, len(letters))) >= min_ratio
+# ===== 한국어 보증 유틸 (비활성화) =====
+# _HANGUL_RE = re.compile(r"[가-힣ㄱ-ㅎㅏ-ㅣ]")  # (한글 탐지 정규식)
+# def _has_hangul_ratio(s: str, min_ratio: float = 0.10) -> bool:
+#     """응답이 한국어인지 간단 비율로 판정"""
+#     if not s:
+#         return False
+#     letters = [ch for ch in s if ch.isalpha() or '\uac00' <= ch <= '\ud7a3' or '\u3131' <= ch <= '\u318E']
+#     if not letters:
+#         return False
+#     hanguls = _HANGUL_RE.findall(s)
+#     return (len(hanguls) / max(1, len(letters))) >= min_ratio
+#
+# def _translate_json_to_ko(json_text: str) -> str:
+#     """LLM이 영어로 내보내면, JSON의 값(value)만 한국어로 번역 (키/구조 보존)"""
+#     prompt = f"""
+# 다음 JSON 문자열의 **값(value)** 들만 한국어로 번역하라. **키(key)/구조/순서/숫자/URL**은 변경 금지.
+# 반드시 **순수 JSON만** 출력한다. 주석/설명/코드블록 금지.
+#
+# 입력 JSON:
+# \"\"\"{json_text.strip()}\"\"\"
+# """
+#     resp = rag_service.run_query_news(
+#         question=prompt,
+#         persona="news_brief",   # 검색 불필요
+#         user_id="translator",
+#         req_meta={"purpose": "json_translate_to_ko"},
+#         service_name="redfin_rag",
+#         categories=None, tags=None, recency_days=0, k=1, fetch_k=1, lambda_mult=0.1,
+#     )
+#     if hasattr(resp, "dict"):
+#         out = resp.dict().get("data", {}).get("answer", {}).get("text") or ""
+#     else:
+#         out = str(resp)
+#     return out or json_text
+# =====================================
 
-def _translate_json_to_ko(json_text: str) -> str:
-    """LLM이 영어로 내보내면, JSON의 값(value)만 한국어로 번역 (키/구조 보존)"""
-    prompt = f"""
-다음 JSON 문자열의 **값(value)** 들만 한국어로 번역하라. **키(key)/구조/순서/숫자/URL**은 변경 금지.
-반드시 **순수 JSON만** 출력한다. 주석/설명/코드블록 금지.
+# (추가) 환경/세팅 값 파싱 헬퍼
+def _as_bool(v: object | None, default: bool = False) -> bool:
+    if isinstance(v, bool):
+        return v
+    if v is None:
+        return default
+    return str(v).strip().lower() in ("1", "true", "yes", "on")
 
-입력 JSON:
-\"\"\"{json_text.strip()}\"\"\"
-"""
-    resp = rag_service.run_query_news(
-        question=prompt,
-        persona="news_brief",   # 검색 불필요
-        user_id="translator",
-        req_meta={"purpose": "json_translate_to_ko"},
-        service_name="redfin_rag",
-        categories=None, tags=None, recency_days=0, k=1, fetch_k=1, lambda_mult=0.1,
-    )
-    if hasattr(resp, "dict"):
-        out = resp.dict().get("data", {}).get("answer", {}).get("text") or ""
-    else:
-        out = str(resp)
-    return out or json_text
-# ============================
+def _as_int(v: object | None, default: int = 0) -> int:
+    try:
+        # None, "", "  ", "10" 등 안전 처리
+        if v is None:
+            return default
+        s = str(v).strip()
+        if s == "":
+            return default
+        return int(s)
+    except Exception:
+        return default
 
 
 def _safe_json_block(s: str) -> Dict[str, Any]:
@@ -98,14 +123,25 @@ def _exists_in_news(q: Dict[str, Any]) -> bool:
 # -------------------- 단건 생성 --------------------
 
 def generate_news_post(req: NewsPublishRequest, feed_meta: Optional[Dict[str, Any]] = None) -> NewsPost:
-    prompt = build_news_prompt(
-        title=req.title,
-        url=req.url,
-        content=req.content,
-        categories=req.categories,
-        tags=req.tags,
+    """
+    변경: .md 템플릿을 로드하여 prompt를 구성한다.
+    - settings.news.prompt_path 에서 템플릿을 읽어 {{title}}, {{url}}, {{content}}, {{categories}}, {{tags}} 등을 치환.
+    - 한국어 보증/번역은 현재 비활성화(영어 출력 유지). 추후 주석 해제만으로 재활성화 가능.
+    """
+    # 1) 템플릿 로딩 및 렌더링(.md)
+    tpl = load_md_template(settings.news.prompt_path or "src/prompts/templates/news_publish_v1.md")
+    prompt = render_template(
+        tpl,
+        title=(req.title or ""),
+        url=(req.url or ""),
+        content=(req.content or ""),
+        categories=", ".join(req.categories or []),
+        tags=", ".join(req.tags or []),
+        meta=json.dumps(feed_meta or {}, ensure_ascii=False),
+        # 필요시 템플릿 변수 추가 가능
     )
 
+    # 2) 뉴스 요약 생성 호출 (검색/RAG 포함)
     resp = rag_service.run_query_news(
         question=prompt,
         persona="news_brief",
@@ -118,7 +154,7 @@ def generate_news_post(req: NewsPublishRequest, feed_meta: Optional[Dict[str, An
         service_name="redfin_rag",
         categories=req.categories,
         tags=req.tags,
-        recency_days=int(os.getenv("NEWS_RECENCY_DAYS", "14")),
+        recency_days=_as_int(os.getenv("NEWS_RECENCY_DAYS", None), default=_as_int(getattr(settings.news, "recency_days", None), 14)),
         k=min((req.top_k or 6), 8),
         fetch_k=max(min(((req.top_k or 6) * 2), 16), 8),
         lambda_mult=0.2,
@@ -132,14 +168,14 @@ def generate_news_post(req: NewsPublishRequest, feed_meta: Optional[Dict[str, An
     else:
         text = str(resp)
 
-    # ---- 한국어 보증: 영어 응답이면 JSON 값만 한국어로 번역 ----
-    if not _has_hangul_ratio(text, min_ratio=0.10):
-        text = _translate_json_to_ko(text)
-    # ---------------------------------------------------------
+    # ---- 한국어 보증/번역: 현재 비활성화 ----
+    # if not _has_hangul_ratio(text, min_ratio=0.10):
+    #     text = _translate_json_to_ko(text)
+    # ----------------------------------------
 
     llm = _parse_llm_output(text)
 
-    title = (llm.title if llm and llm.title else (req.title or "무제"))
+    title = (llm.title if llm and llm.title else (req.title or "Untitled"))
     body_md = (llm.body_md if llm and llm.body_md else (req.content or ""))
     tldr_list = (llm.tldr if llm and llm.tldr else _fallback_tldr_from_text(body_md, k=3))
     tags = (llm.tags if llm and llm.tags else (req.tags or []))
@@ -315,22 +351,27 @@ def publish_from_feed(
     )
 
 
+# (교체) .env → settings → 기본값 순으로 읽고, settings 우선권을 갖게 함
 def publish_from_env() -> Dict[str, Any]:
-    feed_url = os.getenv("NEWS_API_URL")
+    # 1) API URL: settings 우선, 없으면 .env, 둘 다 없으면 에러
+    feed_url = settings.news.api_url or os.getenv("NEWS_API_URL")
     if not feed_url:
-        raise ValueError("NEWS_API_URL is not set")
+        raise ValueError("NEWS_API_URL/settings.news.api_url is empty")
 
-    # 환경에서 필드 매핑 덮어쓰기: DEFAULT_FIELD_MAP 위에 적용
-    field_map_json = os.getenv("NEWS_FEED_FIELD_MAP")
-    user_map = json.loads(field_map_json) if field_map_json else {}
+    # 2) 필드 매핑: settings.news.feed_field_map(있다면) → .env(NEWS_FEED_FIELD_MAP) → DEFAULT
+    user_map = getattr(settings.news, "feed_field_map", None)
+    if user_map is None:
+        field_map_json = os.getenv("NEWS_FEED_FIELD_MAP")
+        user_map = json.loads(field_map_json) if field_map_json else None
     field_map = {**DEFAULT_FIELD_MAP, **user_map} if user_map else DEFAULT_FIELD_MAP
 
-    default_publish = (os.getenv("NEWS_DEFAULT_PUBLISH", "1").lower() in ("1", "true", "yes"))
-    try:
-        default_top_k = int(os.getenv("NEWS_TOP_K", "6"))
-    except Exception:
-        default_top_k = 6
+    # 3) 퍼블리시/탑K: .env가 있으면 우선 적용, 없으면 settings → 기본값
+    default_publish = _as_bool(os.getenv("NEWS_DEFAULT_PUBLISH", None),
+                               default=_as_bool(getattr(settings.news, "default_publish", True), True))
+    default_top_k = _as_int(os.getenv("NEWS_TOP_K", None),
+                            default=_as_int(getattr(settings.news, "top_k", 6), 6))
 
+    # 4) 로더 호출
     return publish_from_loader(
         feed_url=feed_url,
         field_map=field_map,

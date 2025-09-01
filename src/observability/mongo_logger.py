@@ -1,74 +1,62 @@
-import os
+from __future__ import annotations
 from datetime import datetime, timezone
 from typing import Optional, Dict, Any
 
 from pymongo import MongoClient
-from pymongo.errors import PyMongoError
-
-try:
-    from core.settings import settings as _settings
-except Exception:
-    _settings = None
+from pymongo.errors import PyMongoError, ServerSelectionTimeoutError
+from core import settings
 
 _client: Optional[MongoClient] = None
-_db_name: str = ""
-
-
-def _get_env(name: str, default: Optional[str] = None) -> Optional[str]:
-    if _settings is not None:
-        v = getattr(_settings, name, None)
-        if v:
-            return v
-    return os.getenv(name, default)
 
 
 def _ensure_client() -> Optional[MongoClient]:
-    global _client, _db_name
+    global _client
     if _client is not None:
         return _client
-    uri = _get_env("MONGO_URI") or _get_env("MONGODB_URI") or "mongodb://127.0.0.1:27017"
-    _db_name = _get_env("MONGO_DB", "redfin") or "redfin"
+
+    uri = settings.mongo.uri
+    to = settings.mongo.timeout_ms
     try:
-        _client = MongoClient(uri, connect=False, serverSelectionTimeoutMS=1500)
+        _client = MongoClient(
+            uri,
+            connect=False,  # lazy
+            serverSelectionTimeoutMS=to,
+            connectTimeoutMS=to,
+            socketTimeoutMS=to,
+        )
         _client.admin.command("ping")
+        print(f"[mongo] connected → {uri} (db={settings.mongo.db})")
         return _client
-    except Exception:
+    except Exception as e:
+        print(f"[mongo] connect failed: {e} (uri={uri})")
+        _client = None
         return None
 
 
 def init_mongo() -> None:
-    try:
-        _ensure_client()
-    except Exception:
-        pass
+    _ensure_client()  # 로그로 확인
 
 
 def get_db():
-    client = _ensure_client()
-    if client is None:
+    c = _ensure_client()
+    if c is None:
         return None
-    try:
-        return client.get_database(_db_name)
-    except Exception:
-        return None
+    return c[settings.mongo.db]
 
 
 def get_collection(name: str):
     db = get_db()
     if db is None:
         return None
-    try:
-        return db.get_collection(name)
-    except Exception:
-        return None
+    return db.get_collection(name)
 
 
 def logs_collection_name() -> str:
-    return _get_env("MONGO_COL", "rag_logs") or "rag_logs"
+    return settings.mongo.logs_collection
 
 
 def news_collection_name() -> str:
-    return _get_env("NEWS_COL", "news_posts") or "news_posts"
+    return settings.mongo.news_collection
 
 
 def get_logs_collection():
@@ -116,15 +104,40 @@ def log_api_event(
 
 
 def ensure_collections() -> None:
+    """
+    필요한 컬렉션/인덱스 보장.
+    Mongo가 미가용이면 경고만 찍고 종료(앱 기동은 계속).
+    """
     db = get_db()
     if db is None:
+        print("[mongo] unavailable; skip ensure_collections")
         return
+
+    try:
+        existing = set(db.list_collection_names())
+    except ServerSelectionTimeoutError as e:
+        print(f"[mongo] list_collection_names timeout: {e}")
+        return
+    except Exception as e:
+        print(f"[mongo] list_collection_names failed: {e}")
+        return
+
     logs_name = logs_collection_name()
-    if logs_name not in db.list_collection_names():
+    news_name = news_collection_name()
+
+    # 컬렉션 생성
+    if logs_name not in existing:
         try:
             db.create_collection(logs_name)
         except Exception:
             pass
+    if news_name not in existing:
+        try:
+            db.create_collection(news_name)
+        except Exception:
+            pass
+
+    # 인덱스
     try:
         db[logs_name].create_index([("endpoint", 1), ("created_at", -1)])
         db[logs_name].create_index([("extra.request_meta.user_id", 1), ("created_at", -1)])
@@ -133,12 +146,7 @@ def ensure_collections() -> None:
         db[logs_name].create_index([("extra.retrieval.raptor_applied", 1), ("created_at", -1)])
     except Exception:
         pass
-    news_name = news_collection_name()
-    if news_name not in db.list_collection_names():
-        try:
-            db.create_collection(news_name)
-        except Exception:
-            pass
+
     try:
         db[news_name].create_index([("post_id", 1)], unique=True, sparse=True)
         db[news_name].create_index([("created_at", -1)])
@@ -148,12 +156,3 @@ def ensure_collections() -> None:
         db[news_name].create_index([("url", 1)], unique=True, sparse=True)
     except Exception:
         pass
-
-
-def current_mongo_config() -> Dict[str, Any]:
-    return {
-        "mongo_uri": _get_env("MONGO_URI") or _get_env("MONGODB_URI") or "mongodb://127.0.0.1:27017",
-        "db": _db_name or "redfin",
-        "logs_collection": logs_collection_name(),
-        "news_collection": news_collection_name(),
-    }

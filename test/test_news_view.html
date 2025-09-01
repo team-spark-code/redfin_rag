@@ -1,0 +1,231 @@
+<!--
+  test_news_view.html
+  - 기사 뷰어 (Axios Smart Brevity 느낌)
+  - 사용법:
+    1) 로컬 서버로 열기:  python -m http.server 5500
+       → http://localhost:5500/test_news_view.html
+    2) 기본 API Base는 http://localhost:8030
+       - 최신 기사: 그냥 열면 자동으로 최신 1건 로드
+       - 특정 기사: http://localhost:5500/test_news_view.html?post_id=<POST_ID>
+  - 의존: marked.js(마크다운), DOMPurify(정제), dayjs(시간 포맷), feather icons(아이콘)
+-->
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>News Post Viewer</title>
+  <link rel="preconnect" href="https://cdn.jsdelivr.net" />
+  <style>
+    :root{
+      --bg:#f6f7fb; --panel:#ffffff; --ink:#0b1220; --muted:#6b7280;
+      --border:#e6e8ef; --pill:#eef2ff; --pill-text:#4f46e5;
+      --accent:#111827; --ok:#10b981; --err:#ef4444;
+      --tldr-bg:#fbfdff;
+    }
+    *{box-sizing:border-box}
+    body{margin:0;background:var(--bg);color:var(--ink);
+      font-family:ui-sans-serif,system-ui,-apple-system,Segoe UI,Roboto,Pretendard,Apple SD Gothic Neo,Noto Sans KR,Arial}
+    header{position:sticky;top:0;background:rgba(246,247,251,.7);backdrop-filter:blur(6px);border-bottom:1px solid var(--border)}
+    .bar{max-width:1020px;margin:0 auto;padding:12px 16px;display:flex;gap:12px;align-items:center}
+    .brand{font-weight:700;letter-spacing:.2px}
+    .base-input{appearance:none;border:1px solid var(--border);border-radius:10px;background:#fff;padding:8px 10px;font-size:14px}
+    .btn{border:1px solid var(--border);border-radius:10px;background:#fff;padding:8px 12px;cursor:pointer}
+    .btn:hover{background:#f8fafc}
+    main{max-width:820px;margin:22px auto;padding:0 16px}
+    .card{background:var(--panel);border:1px solid var(--border);border-radius:16px}
+    .article{padding:20px}
+    .meta{display:flex;gap:10px;align-items:center;color:var(--muted);font-size:13px}
+    .pill{margin-left:auto;background:var(--pill);color:var(--pill-text);
+      border:1px solid #e5e7ff;padding:6px 10px;border-radius:999px;font-size:12px}
+    h1{margin:8px 0 10px 0;font-size:34px;line-height:1.25;letter-spacing:-.02em}
+    .dek{color:#374151;margin:0 0 14px 0}
+    .byline{color:var(--muted);font-size:14px;margin-top:2px}
+    .tldr{margin:20px 0 18px 0;background:var(--tldr-bg);border:1px solid var(--border);border-radius:14px;padding:14px}
+    .tldr h3{margin:0 0 10px 0;font-size:14px;letter-spacing:.2px}
+    .tldr ol{margin:0;padding:0;list-style:none;display:flex;flex-direction:column;gap:8px}
+    .tldr li{display:flex;gap:10px;align-items:flex-start;background:#fff;border:1px solid var(--border);border-radius:12px;padding:10px}
+    .num{display:inline-flex;align-items:center;justify-content:center;
+      width:22px;height:22px;border-radius:999px;border:1px solid var(--border);font-size:12px;color:#111}
+    .hero{margin:8px 0 18px 0;border-radius:16px;overflow:hidden;border:1px solid var(--border)}
+    .hero img{display:block;width:100%;height:auto}
+    .content{font-size:17px;line-height:1.8;color:#1f2937}
+    .content h2{font-size:20px;margin:20px 0 8px 0}
+    .content p{margin:12px 0}
+    .content ul{padding-left:20px}
+    .tags{display:flex;flex-wrap:wrap;gap:8px;margin-top:20px}
+    .tag{border:1px solid var(--border);background:#fff;border-radius:999px;padding:6px 10px;font-size:12px;color:#374151}
+    .share{display:flex;gap:10px;color:var(--muted);font-size:13px;margin-top:18px}
+    .status{margin-left:6px;font-size:12px}
+    .status.ok{color:var(--ok)} .status.err{color:var(--err)}
+    footer{max-width:820px;margin:20px auto 40px;padding:0 16px;color:var(--muted);font-size:12px;text-align:center}
+    @media (max-width:860px){h1{font-size:28px}}
+  </style>
+</head>
+<body>
+  <header>
+    <div class="bar">
+      <div class="brand">📰 News Viewer</div>
+      <input id="baseUrl" class="base-input" style="width:280px" value="http://localhost:8030" />
+      <input id="postId" class="base-input" style="width:260px" placeholder="post_id (없으면 최신 자동)" />
+      <button id="loadBtn" class="btn">불러오기</button>
+      <span id="stat" class="status"></span>
+    </div>
+  </header>
+
+  <main>
+    <article id="post" class="card article" hidden>
+      <div class="meta">
+        <span id="date">-</span>
+        <span id="time">-</span>
+        <span id="category" class="pill"></span>
+      </div>
+      <h1 id="title"></h1>
+      <p id="dek" class="dek"></p>
+      <div id="byline" class="byline"></div>
+
+      <section id="tldr" class="tldr" hidden>
+        <h3>TL;DR</h3>
+        <ol id="tldrList"></ol>
+      </section>
+
+      <div id="hero" class="hero" hidden></div>
+
+      <section id="content" class="content"></section>
+
+      <div id="tags" class="tags"></div>
+
+      <div class="share">
+        <span data-feather="thumbs-up"></span> 147
+        <span data-feather="message-circle"></span> 62
+        <span data-feather="bookmark"></span> 8
+      </div>
+    </article>
+  </main>
+
+  <footer>
+    데이터는 <code>/redfin_news/posts</code>에서 로드됩니다. 본문은 <code>body_md</code>를 Markdown → HTML로 렌더링합니다.
+  </footer>
+
+  <!-- deps: marked(마크다운), DOMPurify(XSS 정제), dayjs(시간), feather icons -->
+  <script src="https://cdn.jsdelivr.net/npm/marked/marked.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/dompurify@3.1.6/dist/purify.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/dayjs@1/dayjs.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/dayjs@1/plugin/utc.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/dayjs@1/plugin/timezone.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/feather-icons/dist/feather.min.js"></script>
+  <script>
+    dayjs.extend(dayjs_plugin_utc); dayjs.extend(dayjs_plugin_timezone);
+
+    const $ = (id) => document.getElementById(id);
+    const stat = $("stat"), postEl = $("post");
+
+    function setStatus(msg, ok=true){
+      stat.textContent = msg;
+      stat.className = "status " + (ok ? "ok" : "err");
+    }
+
+    function qp(name){
+      const url = new URL(window.location.href);
+      return url.searchParams.get(name);
+    }
+
+    async function fetchJson(url){
+      const r = await fetch(url, {headers: {"Accept":"application/json"}});
+      if(!r.ok) throw new Error("HTTP "+r.status);
+      return await r.json();
+    }
+
+    function setText(id, text){
+      const el = $(id);
+      if(!el) return;
+      if(!text){ el.hidden = true; el.textContent = ""; return; }
+      el.hidden = false; el.textContent = text;
+    }
+
+    function renderTldr(items){
+      const box = $("tldr"); const list = $("tldrList");
+      if(!Array.isArray(items) || items.length===0){ box.hidden = true; list.innerHTML=""; return; }
+      list.innerHTML = "";
+      items.slice(0,3).forEach((t,i)=>{
+        const li = document.createElement("li");
+        li.innerHTML = `<span class="num">${i+1}</span><div>${t}</div>`;
+        list.appendChild(li);
+      });
+      box.hidden = false;
+    }
+
+    function renderHero(url){
+      const wrap = $("hero");
+      if(!url){ wrap.hidden = true; wrap.innerHTML=""; return; }
+      wrap.hidden = false;
+      wrap.innerHTML = `<img src="${encodeURI(url)}" alt="hero" />`;
+    }
+
+    function renderTags(tags){
+      const wrap = $("tags"); wrap.innerHTML = "";
+      (tags||[]).forEach(t=>{
+        const el = document.createElement("span");
+        el.className = "tag"; el.textContent = t;
+        wrap.appendChild(el);
+      });
+    }
+
+    function mdToHtml(md){
+      marked.setOptions({mangle:false, headerIds:false, breaks:true});
+      const dirty = marked.parse(md || "");
+      return DOMPurify.sanitize(dirty);
+    }
+
+    function fmtDate(iso){
+      if(!iso) return ["-","-"];
+      const d = dayjs(iso);
+      return [d.format("YYYY년 M월 D일 dddd"), d.format("HH:mm")];
+    }
+
+    function fill(post){
+      const [dateStr, timeStr] = fmtDate(post.created_at || post.published_at);
+      setText("date", dateStr); setText("time", timeStr);
+      setText("category", post.category || (post.categories && post.categories[0]) || "news");
+      setText("title", post.title || "무제");
+      setText("dek", post.dek || post.subtitle || "");
+      $("byline").textContent = (post.author_name ? `${post.author_name} 기자` : "");
+      renderTldr(post.tldr || []);
+      renderHero(post.hero_image_url);
+      $("content").innerHTML = mdToHtml(post.body_md || "");
+      renderTags(post.tags || []);
+      postEl.hidden = false;
+      try{ feather.replace(); }catch(e){}
+    }
+
+    async function load(){
+      try{
+        const base = $("baseUrl").value.replace(/\/+$/,"");
+        const pid = $("postId").value.trim() || qp("post_id");
+        let data;
+        if(pid){
+          data = await fetchJson(`${base}/redfin_news/posts/${encodeURIComponent(pid)}`);
+          setStatus("loaded: post_id="+pid, true);
+        }else{
+          const arr = await fetchJson(`${base}/redfin_news/posts?limit=1`);
+          if(!Array.isArray(arr) || arr.length===0){ setStatus("no posts", false); return; }
+          data = arr[0];
+          setStatus("loaded: latest", true);
+        }
+        fill(data);
+      }catch(e){
+        setStatus("error: "+(e.message||e), false);
+        postEl.hidden = true;
+      }
+    }
+
+    $("loadBtn").addEventListener("click", load);
+
+    window.addEventListener("DOMContentLoaded", ()=>{
+      const qsId = qp("post_id");
+      if(qsId) $("postId").value = qsId;
+      load();
+    });
+  </script>
+</body>
+</html>

@@ -97,7 +97,7 @@ RAPTOR_TARGET_K=3
 RAPTOR_INDEX_MODE=summary_only
 
 # MongoDB
-MONGO_URI=mongodb://127.0.0.1:27017
+MONGO_URI=mongodb://192.168.0.123:27017
 MONGO_DB=redfin
 MONGO_COL=rag_logs
 NEWS_MONGO_COL=news_posts
