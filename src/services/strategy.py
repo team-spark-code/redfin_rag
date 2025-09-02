@@ -9,18 +9,22 @@ IndexMode = Literal["summary_only", "hybrid"]
 class StrategyPlan:
     strategy: Strategy
     reason: str
+    
     # Retriever
     k: int = 8
     fetch_k: int = 60
     lambda_mult: float = 0.25
+    
     # Index / RAPTOR
     use_raptor: bool = True
     index_mode: IndexMode = "summary_only"   # summary_only: 비용↓, hybrid: 정밀도↑
     raptor_max_depth: int = 2                # 2~3
     raptor_branching: int = 6                # 4~8
+    
     # Generation
     allow_cot: bool = False                  # 체인 오브 생각(CoD)
     max_context_tokens: int = 1800           # 컨텍스트 상한
+    
     # 기타 힌트
     needs_citation: bool = False
     needs_numeric_exactness: bool = False

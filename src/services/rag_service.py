@@ -9,23 +9,21 @@ from datetime import datetime, timedelta, timezone
 
 # ───────── 기존 공용 파이프라인(일반 RAG) ─────────
 from nureongi import build_index, build_embedder, as_retriever, build_rag_chain
-from observability.langsmith import set_ls_project, maybe_redact, build_trace_config
 
-# ───────── 뉴스(시맨틱) 전용 인덱스 지원 ─────────
-from core import settings
-from langchain_huggingface import HuggingFaceEmbeddings
-from nureongi.ingestion_news_semantic import build_news_semantic_index  # 뉴스 전용 시맨틱 인덱서
-from langchain_community.vectorstores import Chroma
+# ⬇️ 변경: 전역 ENV 스왑(set_ls_project) 제거, 요청 단위 트레이서 주입 방식으로 전환
+# - 라우터에서 run_config(= callbacks/tags/metadata 포함)를 넘겨주면 그대로 사용
+# - 라우터에서 run_config가 없을 때만 내부 기본값으로 보강
+from observability.langsmith import (
+    make_tracer_for,          # (백업용) 내부에서 tracer 생성할 때 사용
+    maybe_redact,
+    build_trace_config,
+)
 
 # ====== 공용(일반 RAG) 핸들 ======
 EMB = None            # embedder handle
 VSTORE = None         # vector store
 RETRIEVER = None      # LangChain retriever
 _CHAIN_CACHE: Dict[Tuple[str, str], Any] = {}  # (persona, strategy) -> chain
-
-# ====== 뉴스(시맨틱) 전용 핸들 ======
-_NEWS_VS = None       # news vector store
-_NEWS_CHAIN_CACHE: Dict[Tuple[str, str], Any] = {}  # (persona, strategy) -> chain (뉴스 전용)
 
 
 # ─────────────────────────────────────────────────────────────────────
@@ -119,24 +117,53 @@ def get_chain(persona: str, strategy: str):
     return _CHAIN_CACHE[key]
 
 
+def _ensure_run_config(
+    service_name: str,
+    user_id: str,
+    plan: Dict[str, Any] | None,
+    run_config: Optional[Dict[str, Any]],
+):
+    """
+    라우터에서 run_config를 주면 그대로 사용.
+    없으면 최소한의 tracer/config를 내부에서 보강 생성.
+    """
+    if run_config:
+        return run_config
+    tracer = make_tracer_for(service_name)
+    cfg = build_trace_config(service_name=service_name, user_id=user_id, plan=plan)
+    cfg["callbacks"] = [tracer]
+    return cfg
+
+
 def run_query(
     question: str,
     persona: str,
     strategy: str,
     user_id: str,
     req_meta: Dict,
-    service_name: str = None,
+    service_name: str | None = None,
+    run_config: Optional[Dict[str, Any]] = None,   # ⬅️ 추가: 요청 단위 트레이스 설정
 ):
-    """일반 RAG 실행(기존 경로)."""
+    """일반 RAG 실행(최종 호출에서 반드시 config=run_config 전달)."""
+    from core import settings  # 지연 임포트(순환 참조 방지)
+
     service_name = service_name or settings.app.service_name
     chain = get_chain(persona, strategy)
+
+    # 입력 마스킹(PII 등)
     q_for_log = maybe_redact(question)
-    trace_cfg = build_trace_config(
-        service_name=service_name, user_id=user_id, plan=req_meta.get("plan")
+
+    # 요청 단위 트레이스 설정 준비(라우터 전달 > 내부 기본)
+    cfg = _ensure_run_config(
+        service_name=service_name,
+        user_id=user_id,
+        plan=req_meta.get("plan"),
+        run_config=run_config,
     )
-    with set_ls_project(service_name):
-        q_input = q_for_log if isinstance(q_for_log, str) else str(q_for_log)
-        answer_text = chain.invoke({"question": q_input}, config=trace_cfg)
+
+    # LangChain Runnable 실행 시 **항상** config 전달
+    q_input = q_for_log if isinstance(q_for_log, str) else str(q_for_log)
+    answer_text = chain.invoke({"question": q_input}, config=cfg)
 
     use_raptor_hint = True
     try:
@@ -160,156 +187,8 @@ def run_query(
                 "index_mode": "summary_only",
                 "use_raptor": use_raptor_hint,
                 "embedding_model": req_meta.get("plan", {}).get(
-                    "emb_model", settings.rag.emb_model
+                    "emb_model", getattr(settings.rag, "emb_model", None)
                 ),
-            },
-        },
-    }
-
-
-# ─────────────────────────────────────────────────────────────────────
-#                           뉴스(시맨틱) 전용
-# ─────────────────────────────────────────────────────────────────────
-def _emb() -> HuggingFaceEmbeddings:
-    return HuggingFaceEmbeddings(model_name=settings.rag.emb_model)
-
-
-def init_news_index_semantic() -> None:
-    """
-    서버 부팅 시, 뉴스 전용(시맨틱) 인덱스를 초기화.
-    - 별도 컬렉션(settings.news.collection) 사용
-    - 기존 일반 인덱스와 분리 운용
-    """
-    global _NEWS_VS, _NEWS_CHAIN_CACHE
-    vs, info = build_news_semantic_index(
-        news_url=settings.news.api_url,
-        emb_model=settings.rag.emb_model,
-        collection_name=settings.news.collection,  # e.g., "news_semantic_v1"
-        persist_dir=os.getenv("CHROMA_DIR", "./.chroma"),
-        distance="cosine",
-    )
-    _NEWS_VS = vs
-    _NEWS_CHAIN_CACHE.clear()
-    print(f"[news] semantic index ready: {info}")
-
-
-@lru_cache(maxsize=1)
-def get_news_vectorstore():
-    """
-    뉴스 전용 컬렉션을 VectorStore로 붙여서 반환.
-    - 부팅 때 init_news_index_semantic()을 안 불러도, 기존 컬렉션이 있으면 cold attach 가능
-    """
-    global _NEWS_VS
-    if _NEWS_VS is not None:
-        return _NEWS_VS
-    vs = Chroma(
-        collection_name=settings.news.collection,
-        embedding_function=_emb(),
-        persist_directory=os.getenv("CHROMA_DIR", "./.chroma"),
-    )
-    _NEWS_VS = vs
-    return _NEWS_VS
-
-
-def _build_news_filter(
-    categories: Optional[List[str]],
-    tags: Optional[List[str]],
-    recency_days: int
-) -> Optional[Dict[str, Any]]:
-    ands: List[Dict[str, Any]] = []
-    try:
-        since_ts = (datetime.now(timezone.utc) - timedelta(days=max(1, int(recency_days)))).timestamp()
-    except Exception:
-        since_ts = None
-    if since_ts and since_ts > 0:
-        ands.append({"published_at_ts": {"$gte": since_ts}})
-    if categories:
-        ands.append({"category": {"$in": categories}})
-    if tags:
-        ands.append({"tags": {"$in": tags}})
-    return {"$and": ands} if ands else None
-
-
-def _get_news_chain(persona: str, strategy: str, retriever) -> Any:
-    """뉴스 전용 체인(뉴스 retriever 기반, 별도 캐시)."""
-    key = (persona, strategy or "stuff")
-    if key not in _NEWS_CHAIN_CACHE:
-        _NEWS_CHAIN_CACHE[key] = build_rag_chain(retriever, persona=persona, strategy=strategy)
-    return _NEWS_CHAIN_CACHE[key]
-
-
-def run_query_news(
-    *,
-    question: str,
-    persona: str = "news_brief",
-    user_id: str = "newsbot",
-    req_meta: Optional[Dict[str, Any]] = None,
-    service_name: str = None,
-    categories: Optional[List[str]] = None,
-    tags: Optional[List[str]] = None,
-    recency_days: int = 14,
-    k: int = 6,
-    fetch_k: int = 12,
-    lambda_mult: float = 0.2,
-):
-    """
-    뉴스 라인 전용 실행:
-    - 시맨틱 컬렉션(VectorStore)에서 retriever 생성
-    - 카테고리/태그/기간 필터를 retriever.search_kwargs.filter로 전달
-    - RAPTOR OFF (pipeline_hints)
-    """
-    service_name = service_name or "redfin_rag"
-
-    news_vs = get_news_vectorstore()
-    k, fetch_k = _cap_pair(k, fetch_k, vs=news_vs)
-    news_filter = _build_news_filter(categories, tags, recency_days)
-
-    # 뉴스용 retriever를 매 호출 시 생성(필터/파라미터 반영)
-    news_retriever = news_vs.as_retriever(
-        search_type="mmr",
-        search_kwargs={
-            "k": k,
-            "fetch_k": fetch_k,
-            "lambda_mult": float(lambda_mult),
-            "filter": news_filter,
-        },
-    )
-
-    # 뉴스용 체인(뉴스 retriever 기반)
-    chain = _get_news_chain(persona=persona, strategy="stuff", retriever=news_retriever)
-
-    meta = dict(req_meta or {})
-    meta.update(
-        {
-            "purpose": "news_publish",
-            "news": {"categories": categories, "tags": tags, "recency_days": recency_days},
-            "pipeline_hints": {"use_raptor": False, "strict_citation": True},
-        }
-    )
-
-    q_for_log = maybe_redact(question)
-    trace_cfg = build_trace_config(service_name=service_name, user_id=user_id, plan=meta.get("plan"))
-    with set_ls_project(service_name):
-        q_input = q_for_log if isinstance(q_for_log, str) else str(q_for_log)
-        answer_text = chain.invoke({"question": q_input}, config=trace_cfg)
-
-    return {
-        "version": "v1",
-        "data": {
-            "answer": {"text": str(answer_text), "format": "markdown"},
-            "persona": persona,
-            "strategy": "stuff",
-            "sources": [],
-        },
-        "meta": {
-            "service": service_name,
-            "user": {"user_id": user_id or "notuser", "session_id": str(uuid.uuid4())},
-            "request": meta,
-            "pipeline": {
-                "index_mode": "semantic_v1",
-                "use_raptor": False,
-                "embedding_model": settings.rag.emb_model,
-                "collection": settings.news.collection,
             },
         },
     }

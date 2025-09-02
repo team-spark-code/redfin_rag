@@ -68,15 +68,19 @@
     .bubble{
       max-width:min(780px, 100%);
       padding:12px 14px;border:1px solid var(--line);border-radius:14px;background:var(--bubble);
-      overflow-wrap:anywhere; /* 긴 단어 줄바꿈 */
-      line-height:1.55;  /* 줄 간격 자연스럽게 */
+      overflow-wrap:anywhere;
+      line-height:1.6;
     }
     .msg.user .bubble{background:var(--bubble-user);border-color:#cfe1ff}
-    .bubble h1,.bubble h2,.bubble h3{margin:.6em 0 .3em}  /* 헤딩 간격 축소 */
-    .bubble p{margin:.5em 0}
+
+    /* Markdown inside bubble */
+    .bubble h1,.bubble h2,.bubble h3{margin:.6em 0 .3em}
+    .bubble p{margin:.55em 0}
     .bubble pre{background:#f5f7fa;color:#0e1116;border-radius:10px;padding:10px;overflow:auto;max-width:100%}
     .bubble code{background:#f3f4f6;padding:2px 4px;border-radius:6px}
-    .bubble ul,.bubble ol{margin:.4em 0 .6em .9em}
+    .bubble blockquote{border-left:3px solid #e5e7eb;margin:.6em 0;padding:.1em 0 .1em .8em;color:#475569}
+    .bubble hr{border:none;border-top:1px solid #e5e7eb;margin:.9em 0}
+    .bubble ul, .bubble ol { margin:.6em 0 .8em 1.2em; padding-left:.8em; }
     .bubble a{color:#1d4ed8;text-decoration:none}
 
     details.refbox{margin-top:8px;border-top:1px dashed #e5e7eb;padding-top:8px}
@@ -153,6 +157,10 @@
   </div>
 </main>
 
+<!-- Markdown 렌더러 & XSS 방지 -->
+<script src="https://cdn.jsdelivr.net/npm/marked/marked.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/dompurify@3.1.7/dist/purify.min.js"></script>
+
 <script>
   // 기본 설정
   const BASE_URL = "http://192.168.0.66:8030";
@@ -221,7 +229,6 @@
     item.addEventListener("click", ()=>{
       currentPersona = item.dataset.value || "";
       const label = PERSONA_LABEL[currentPersona] || "";
-      // 표시 업데이트 (선택 전에는 비표시)
       if(label){
         personaChip.textContent = label;
         personaChip.style.display = "inline-block";
@@ -240,35 +247,23 @@
     statusEl.textContent = v ? "요청 중…" : "대기 중";
   }
 
-  // Markdown 경량 렌더러
-  function escapeHtml(s){return s.replace(/[&<>"]/g, ch=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[ch]||ch));}
+  // Markdown 렌더러 (marked + DOMPurify)
   function renderMarkdown(md){
-    if(!md || typeof md!=="string") return "";
-    // 코드블록
-    md = md.replace(/```(\w+)?\n([\s\S]*?)```/g, (_,lang,code)=>`<pre><code>${escapeHtml(code)}</code></pre>`);
-    // 인라인 코드
-    md = md.replace(/`([^`]+)`/g, (_,code)=>`<code>${escapeHtml(code)}</code>`);
-    // 굵게/기울임
-    md = md.replace(/\*\*([^*]+)\*\*/g,"<strong>$1</strong>");
-    md = md.replace(/\*([^*]+)\*/g,"<em>$1</em>");
-    // 헤더
-    md = md.replace(/^###\s+(.*)$/gm,"<h3>$1</h3>");
-    md = md.replace(/^##\s+(.*)$/gm,"<h2>$1</h2>");
-    md = md.replace(/^#\s+(.*)$/gm,"<h1>$1</h1>");
-    // 리스트
-    md = md.replace(/^\s*\d+\.\s+(.+)$/gm,"<li>$1</li>");
-    md = md.replace(/(<li>[\s\S]*?<\/li>)(?![\s\S]*<\/ol>)/g, "<ol>$1</ol>");
-    md = md.replace(/^\s*[-*]\s+(.+)$/gm,"<li>$1</li>");
-    md = md.replace(/(<li>[\s\S]*?<\/li>)(?![\s\S]*<\/ul>)/g, "<ul>$1</ul>");
-    // 링크
-    md = md.replace(/\[([^\]]+)\]\((https?:\/\/[^\s)]+)\)/g, `<a href="$2" target="_blank" rel="noopener noreferrer">$1</a>`);
-    // 단락
-    const blocks = md.split(/\n{2,}/).map(b=>{
-      if(/^\s*<(h\d|ul|ol|pre|blockquote)/.test(b)) return b;
-      if(b.trim().startsWith("<li>")) return b;
-      return `<p>${b.replace(/\n/g,"<br/>")}</p>`;
+    if(!md || typeof md !== "string") return "";
+    marked.setOptions({
+      gfm: true,
+      breaks: true,        // 단일 개행도 <br> 처리
+      headerIds: false,    // 헤더 id 자동 생성 끔(중복 방지)
+      mangle: false
     });
-    return blocks.join("\n");
+    const renderer = new marked.Renderer();
+    const origLink = renderer.link.bind(renderer);
+    renderer.link = function(href, title, text) {
+      const html = origLink(href, title, text);
+      return html.replace('<a ', '<a target="_blank" rel="noopener noreferrer" ');
+    };
+    const html = marked.parse(md, { renderer });
+    return DOMPurify.sanitize(html);
   }
 
   // 응답 파싱
@@ -291,6 +286,7 @@
   }
 
   // 채팅 메시지 유틸
+  function escapeHtml(s){return s.replace(/[&<>"]/g, ch=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[ch]||ch));}
   function addUserMessage(text){
     const m = document.createElement("div");
     m.className = "msg user";
@@ -325,7 +321,7 @@
         headers:{ "Content-Type":"application/json" },
         body: JSON.stringify({
           question: q,
-          persona: currentPersona || "",   // 선택 전에는 빈 값 → 기본 페르소나
+          persona: currentPersona || "",
           strategy: "auto",
           top_k: 8
         })

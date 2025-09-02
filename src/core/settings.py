@@ -28,20 +28,37 @@ class RagSettings(BaseModel):
     emb_model: str = Field(default="BAAI/bge-base-en-v1.5", validation_alias=AliasChoices("EMB_MODEL"))
 
 
+# [추가] NewsSettings에 인덱스/Enrichment 옵션을 명시적으로 둡니다.
 class NewsSettings(BaseModel):
-    api_url: str = Field(default="http://192.168.0.123:8000/news/extract", validation_alias=AliasChoices("NEWS_API_URL"))
+    prompt_path: str = "src/prompts/templates/news_publish_v1.md"
+    api_url: str | None = None
+    collection: str = "news_logs"   # [추가] 뉴스 전용 Chroma 컬렉션명
+    persist_dir: str = "./.chroma"         # [추가] Chroma 저장 경로(공용 가능)
+    use_llm: bool = True
+    recency_days: int = 14
+    top_k: int = 6
+    default_publish: bool = True
 
-    # 청킹/프롬프트/컬렉션
-    chunk_strategy: str = Field(default="default", validation_alias=AliasChoices("NEWS_CHUNK_STRATEGY"))
-    prompt_path: str = Field(default="src/prompts/templates/news_publish_v1.md", validation_alias=AliasChoices("NEWS_PROMPT_PATH"))
+    # 관측/네이밍
+    langsmith_project: str = "redfin_news-publish"
+    service_name: str = "redfin_news"
 
-    # 벡터 DB 상의 컬렉션명 (뉴스용)
-    collection: str = Field(default="news_default_v1", validation_alias=AliasChoices("NEWS_COLLECTION"))
+    # [추가] 컨텍스트 보강(선택) — 기본은 False로 꺼둠(출간은 편집/요약만)
+    enable_enrichment: bool = False
+    enrich_k: int = 3
+    enrich_fetch_k: int = 8
+    enrich_lambda: float = 0.2
+    emb_model: str = "BAAI/bge-base-en-v1.5"   # [추가] 뉴스 인덱스/리트리버 임베딩
     
-    # 추가 코드: 자동 출간 여부를 제어하는 환경변수
+    # [추가] 우리 기사(출간본) 전용 벡터 컬렉션
+    vector_collection_posts: str = "news_posts_v1"   # [추가]
+    # [추가] 출간 직후 자동 인덱싱 여부
+    index_on_publish: bool = True                    # [추가]
+    
+    # [신규] 서버 기동 시 뉴스 시드 여부(환경변수와 연결)
     seed_on_startup: bool = Field(
         default=True,
-        validation_alias=AliasChoices("NEWS_SEED_ON_STARTUP", "news_seed_on_startup"),
+        validation_alias=AliasChoices("NEWS__SEED_ON_STARTUP", "NEWS_SEED_ON_STARTUP"),
     )
 
 
@@ -60,7 +77,7 @@ class MongoSettings(BaseModel):
     )
     db: str = Field(default="redfin", validation_alias=AliasChoices("MONGO_DB"))
     logs_collection: str = Field(default="rag_logs", validation_alias=AliasChoices("MONGO_COL"))
-    news_collection: str = Field(default="news_semantic_v1", validation_alias=AliasChoices("NEWS_COL"))
+    news_collection: str = Field(default="news_logs", validation_alias=AliasChoices("NEWS_COL"))
     timeout_ms: int = Field(default=3000, validation_alias=AliasChoices("MONGO_TIMEOUT_MS"))
 
 

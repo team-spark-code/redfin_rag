@@ -37,7 +37,7 @@ def build_news_semantic_index(
     chunks = splitter.split_documents(docs)
 
     # 3) 벡터스토어 생성 (기존 create_chroma_store 재사용)
-    coll = collection_name or os.getenv("NEWS_COLLECTION", "news_semantic_v1")
+    coll = collection_name or os.getenv("NEWS_COLLECTION", "news_logs")
     pdir = str(persist_dir or os.getenv("CHROMA_DIR", "./.chroma"))
     vsr: VSReturn = create_chroma_store(
         embedding=emb_for_chunk,   # 같은 임베딩으로 인덱싱

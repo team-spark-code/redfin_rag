@@ -12,8 +12,11 @@ from schemas.response import QueryResponseV1
 from services import rag_service
 from services.strategy import choose_strategy_advanced
 from nureongi import get_persona_by_alias
-from nureongi.chain import RAPTOR_APPLIED, RAPTOR_REQUIRED  # NEW: RAPTOR 플래그 가져오기
+from nureongi.chain import RAPTOR_APPLIED, RAPTOR_REQUIRED
 from observability.mongo_logger import log_api_event
+
+# >>> 추가: LangSmith 트레이서/컨피그 유틸 가져오기
+from observability.langsmith import make_tracer_for, build_trace_config
 
 router = APIRouter(tags=["redfin_target-insight"])
 
@@ -54,6 +57,15 @@ def redfin_target_insight(req: QueryRequest, request: Request):
         "plan": asdict(plan),
     }
 
+    # >>> 추가: 이 요청만 LangSmith 프로젝트(api_rag 등)로 기록되도록 트레이서/컨피그 생성
+    tracer = make_tracer_for("redfin_target-insight")
+    run_cfg = build_trace_config(
+        service_name="redfin_target-insight",
+        user_id=(req.user_id or "notuser"),
+        plan=asdict(plan),
+    )
+    run_cfg["callbacks"] = [tracer]  # 중요: 요청 단위로 콜백 주입
+
     try:
         resp = rag_service.run_query(
             question=req.question,
@@ -62,16 +74,15 @@ def redfin_target_insight(req: QueryRequest, request: Request):
             user_id=(req.user_id or "notuser"),
             req_meta=req_meta,
             service_name=settings.app.service_name,
+            # >>> 추가: 요청 단위 트레이스 설정 전달
+            run_config=run_cfg,
         )
 
         elapsed_ms = int((perf_counter() - start) * 1000)
         response_generated_at = datetime.now(timezone.utc)
 
         try:
-            # 응답을 dict로 변환
             envelope = resp.dict() if hasattr(resp, "dict") else resp
-
-            # answer 텍스트 길이/간단 메타 추출 (스키마: QueryResponseV1 기준)
             answer_text = ""
             try:
                 if isinstance(envelope, dict):
@@ -103,17 +114,15 @@ def redfin_target_insight(req: QueryRequest, request: Request):
                         "lambda_mult": plan.lambda_mult,
                         "user_id": req.user_id or "notuser",
                     },
-                    # NEW: 리트리벌 관련 메타데이터 (RAPTOR 사용 여부 포함)
                     "retrieval": {
                         "raptor_required": bool(RAPTOR_REQUIRED),
-                        "raptor_applied": bool(RAPTOR_APPLIED.get()),  # 체인에서 실제로 사용됐는가
+                        "raptor_applied": bool(RAPTOR_APPLIED.get()),
                         "top_k": plan.k,
                         "fetch_k": plan.fetch_k,
                         "lambda_mult": plan.lambda_mult,
                     },
                     "answer_meta": {
                         "chars": len(answer_text),
-                        # 토큰 카운트가 필요하면 토크나이저 연동 후 주입
                         "tokens": None,
                     },
                     "service": settings.app.service_name,
@@ -155,7 +164,6 @@ def redfin_target_insight(req: QueryRequest, request: Request):
                     "request_received_at": request_received_at.isoformat(),
                     "response_generated_at": datetime.now(timezone.utc).isoformat(),
                     "service": settings.app.service_name,
-                    # NEW: 에러 상황에서도 RAPTOR 메타 남기기
                     "retrieval": {
                         "raptor_required": bool(RAPTOR_REQUIRED),
                         "raptor_applied": bool(RAPTOR_APPLIED.get()),
