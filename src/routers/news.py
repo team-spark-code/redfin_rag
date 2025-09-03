@@ -5,23 +5,31 @@ from typing import Optional, Dict, Any
 from fastapi import APIRouter, HTTPException, Query, status
 from fastapi.encoders import jsonable_encoder
 
-from core import settings
+# settings 임포트 (프로젝트 구조에 맞춰 선택)
+try:
+    from core.settings import settings  # 권장
+except Exception:
+    from core import settings
+
 from schemas.news import NewsPublishRequest
 from services.news_service import (
     generate_news_post,
     publish_from_feed,
     publish_from_env,
+    init_index,
+    init_news_index_semantic,
+    init_news_index_fixed,
 )
 from observability.mongo_logger import get_news_collection
 
-# >>> 추가: LangSmith 트레이서/컨피그 유틸
+# LangSmith: 요청 단위 프로젝트 분리
 from observability.langsmith import make_tracer_explicit, build_trace_config
 
 router = APIRouter(prefix="/redfin_news", tags=["redfin_news"])
 
 def _news_run_cfg(user_id: str = "notuser") -> Dict[str, Any]:
     """뉴스 전용 LangSmith run_config 생성 유틸."""
-    tracer = make_tracer_explicit(settings.news.langsmith_project or "redfin_news-publish")
+    tracer = make_tracer_explicit(getattr(settings.news, "langsmith_project", None) or "redfin_news-publish")
     cfg = build_trace_config(service_name="redfin_news", user_id=user_id, plan=None)
     cfg["callbacks"] = [tracer] if tracer else []
     return cfg
@@ -30,14 +38,12 @@ def _news_run_cfg(user_id: str = "notuser") -> Dict[str, Any]:
 def publish(req: NewsPublishRequest):
     if not (req.title or req.content):
         raise HTTPException(status_code=400, detail="title or content is required")
-
-    # >>> 추가: 뉴스 전용 run_config 전달 (요약용 체인에 기록)
     run_cfg = _news_run_cfg(user_id="system")
     post = generate_news_post(req, run_config=run_cfg)
     return jsonable_encoder(post.dict())
 
 @router.post("/publish_feed")
-def publish_feed(payload: Dict[str, Any]):
+def publish_feed_route(payload: Dict[str, Any]):
     feed_url: str = payload.get("feed_url")
     item_path: Optional[str] = payload.get("item_path")
     field_map: Optional[Dict[str, str]] = payload.get("field_map")
@@ -50,7 +56,6 @@ def publish_feed(payload: Dict[str, Any]):
     if not feed_url:
         raise HTTPException(status_code=400, detail="feed_url is required")
 
-    # >>> 추가: 뉴스 전용 run_config 전달
     run_cfg = _news_run_cfg(user_id="system")
     return publish_from_feed(
         feed_url=feed_url,
@@ -64,13 +69,27 @@ def publish_feed(payload: Dict[str, Any]):
 @router.post("/publish_from_env")
 def publish_from_env_route():
     try:
-        # >>> 추가: 뉴스 전용 run_config 전달
         run_cfg = _news_run_cfg(user_id="system")
         return publish_from_env(run_config=run_cfg)
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"publish_from_env failed: {e}")
+
+@router.post("/init_index")
+def route_init_index():
+    """Chroma 컬렉션 생성/열기만 수행."""
+    return init_index()
+
+@router.post("/init_index_semantic")
+def route_init_index_semantic():
+    """시맨틱 청킹으로 인덱스 초기화 (ingest_source에 맞춰 입력 로드)."""
+    return init_news_index_semantic()
+
+@router.post("/init_index_fixed")
+def route_init_index_fixed(chunk_size: int = 1200, chunk_overlap: int = 120):
+    """고정 크기+오버랩 청킹 인덱스 초기화 (ingest_source에 맞춰 입력 로드)."""
+    return init_news_index_fixed(chunk_size=chunk_size, chunk_overlap=chunk_overlap)
 
 @router.get("/posts")
 def list_posts(
@@ -86,6 +105,7 @@ def list_posts(
     if status:
         q["status"] = status
 
+    # created_at/updated_at 정렬 키가 없을 수도 있으니 폴백 처리
     try:
         cur = (
             col.find(q, {"_id": 0})

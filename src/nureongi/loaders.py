@@ -1,12 +1,14 @@
 # nureongi/loaders.py
 from __future__ import annotations
-from typing import List, Dict, Any, Optional, Callable
+from typing import List, Dict, Any, Optional, Callable, Iterable, Mapping
 import re, html, hashlib
 import requests
 from requests.adapters import HTTPAdapter
 from urllib3.util.retry import Retry
 from langchain_core.documents import Document
-from datetime import datetime, timezone
+from datetime import datetime, timedelta
+from pymongo import MongoClient
+from bson import ObjectId
 
 # 기본 매핑: 너희 JSON 구조에 맞춤
 DEFAULT_FIELD_MAP: Dict[str, str] = {
@@ -149,3 +151,104 @@ class NewsLoader:
             md["doc_id"] = _doc_id(md)
             out.append(Document(page_content=d.page_content, metadata=md))
         return out
+    
+def load_news_from_mongo(
+    mongo_uri: str,
+    db_name: str,
+    collection: str,
+    *,
+    query: Optional[Mapping[str, Any]] = None,
+    projection: Optional[Mapping[str, int]] = None,
+    limit: Optional[int] = None,
+    recency_days: Optional[int] = None,
+) -> List[Dict[str, Any]]:
+    """
+    MongoDB에서 기사 원문을 읽어, 기존 HTTP JSON과 동일한 스키마로 정규화하여 반환.
+    반환 스키마 예시:
+    {
+        "guid": str,              # 고유키
+        "title": str,
+        "content": str,           # 기사 본문 (기존 article_text -> content 매핑)
+        "url": str | None,
+        "category": str | None,
+        "published_at": str | None   # ISO8601
+    }
+    """
+    _query = dict(query or {})
+
+    # 최근 N일 필터가 있다면 간단히 published_at/created_at 계열로 가정 필터
+    if recency_days and recency_days > 0:
+        threshold = datetime.utcnow() - timedelta(days=recency_days)
+        # 컬럼명이 프로젝트마다 다를 수 있음: published_at, pubDate, created_at 중 하나를 우선 시도
+        _query.setdefault("$or", [
+            {"published_at": {"$gte": threshold}},
+            {"pubDate": {"$gte": threshold}},
+            {"created_at": {"$gte": threshold}},
+        ])
+
+    _proj = dict(projection or {})
+    # 가져오고 싶은 대표 필드들 (없어도 동작하게 유연화)
+    if not _proj:
+        _proj = {
+            "_id": 1,
+            "title": 1,
+            "article_text": 1,  # 중요: 본문
+            "url": 1,
+            "link": 1,          # url 대체 후보
+            "category": 1,
+            "categories": 1,
+            "published_at": 1,
+            "pubDate": 1,
+            "created_at": 1,
+        }
+
+    client = MongoClient(mongo_uri)
+    try:
+        cur = (client[mdb_name := db_name][collection]
+               .find(_query, _proj)
+               .sort([("_id", -1)]))
+        if limit:
+            cur = cur.limit(int(limit))
+
+        items: List[Dict[str, Any]] = []
+        for doc in cur:
+            _id = doc.get("_id")
+            guid = str(_id) if isinstance(_id, ObjectId) else (str(_id) if _id else None)
+
+            # 본문 후보: article_text > content > text
+            content = (
+                doc.get("article_text")
+                or doc.get("content")
+                or doc.get("text")
+                or ""
+            )
+
+            # URL 후보: url > link
+            url = doc.get("url") or doc.get("link")
+
+            # 카테고리 후보: category > categories[0]
+            category = doc.get("category")
+            if not category:
+                cats = doc.get("categories")
+                if isinstance(cats, list) and cats:
+                    category = cats[0]
+
+            # 발행일 후보
+            published = doc.get("published_at") or doc.get("pubDate") or doc.get("created_at")
+            if isinstance(published, datetime):
+                published_iso = published.isoformat()
+            else:
+                published_iso = str(published) if published else None
+
+            items.append({
+                "guid": guid,
+                "title": doc.get("title") or "",
+                "content": content,
+                "url": url,
+                "category": category,
+                "published_at": published_iso,
+            })
+        return items
+    finally:
+        client.close()    
+
