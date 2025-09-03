@@ -23,9 +23,6 @@ if __name__ == "__main__":
         "api_rag:app",
         host=settings.app.host,
         port=settings.app.port,
-        workers=4,
-        limit_concurrency=200,
-        backlog=2048,
         reload=True,
         log_level="info",  # uvicorn 자체 로그 레벨
     )
