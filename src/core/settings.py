@@ -15,10 +15,17 @@ class AppSettings(BaseModel):
         default_factory=lambda: [
             "http://localhost:5500",
             "http://127.0.0.1:5500",
+            "http://localhost:3000",
             "http://localhost:8000",
             "http://localhost:8001",
         ],
-        validation_alias=AliasChoices("ALLOWED_ORIGINS")
+        validation_alias=AliasChoices("CORS_ORIGINS", "ALLOWED_ORIGINS"),
+    )
+
+    # 192.168.0.0/24 전체 허용 (http/https, 임의 포트)
+    cors_origin_regex: str = Field(
+        default=r"^https?://192\.168\.0\.\d{1,3}(:\d+)?$",
+        validation_alias=AliasChoices("CORS_ORIGIN_REGEX"),
     )
 
     service_name: str = Field(default="redfin_target-insight", validation_alias=AliasChoices("SERVICE_NAME"))

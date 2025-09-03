@@ -16,8 +16,9 @@ def create_app() -> FastAPI:
 
     app.add_middleware(
         CORSMiddleware,
-        allow_origins=settings.app.allowed_origins or ["*"],
-        allow_credentials=False,
+        allow_origins=["*"],         # 모든 오리진 허용
+        allow_origin_regex=".*",     # 정규식으로도 모든 오리진 허용
+        allow_credentials=True,      # 쿠키/세션 인증도 허용하려면 True
         allow_methods=["*"],
         allow_headers=["*"],
     )
