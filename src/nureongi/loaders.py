@@ -23,6 +23,20 @@ DEFAULT_FIELD_MAP: Dict[str, str] = {
     "lang": "language",         # 언어 ("ENGLISH" 등)
 }
 
+def _to_epoch_any(x) -> Optional[float]:
+    """str(ISO8601) 또는 datetime 모두 epoch로 변환"""
+    if x is None:
+        return None
+    try:
+        # datetime 인스턴스
+        if hasattr(x, "timestamp"):
+            return float(x.timestamp())
+        # 문자열
+        s = str(x).replace("Z", "+00:00")
+        return datetime.fromisoformat(s).timestamp()
+    except Exception:
+        return None
+
 def _to_epoch(s: Optional[str]) -> Optional[float]:
     if not s:
         return None
@@ -152,103 +166,118 @@ class NewsLoader:
             out.append(Document(page_content=d.page_content, metadata=md))
         return out
     
-def load_news_from_mongo(
-    mongo_uri: str,
-    db_name: str,
-    collection: str,
-    *,
-    query: Optional[Mapping[str, Any]] = None,
-    projection: Optional[Mapping[str, int]] = None,
-    limit: Optional[int] = None,
-    recency_days: Optional[int] = None,
-) -> List[Dict[str, Any]]:
-    """
-    MongoDB에서 기사 원문을 읽어, 기존 HTTP JSON과 동일한 스키마로 정규화하여 반환.
-    반환 스키마 예시:
-    {
-        "guid": str,              # 고유키
-        "title": str,
-        "content": str,           # 기사 본문 (기존 article_text -> content 매핑)
-        "url": str | None,
-        "category": str | None,
-        "published_at": str | None   # ISO8601
-    }
-    """
-    _query = dict(query or {})
+    
+    def _to_documents(self, items: List[Dict[str, Any]]) -> List[Document]:
+        """HTTP/Mongo에서 읽은 dict 목록을 공통 Document[]로 통일"""
+        docs: List[Document] = []
+        for it in items:
+            it = dict(it or {})
+            if self.transform:
+                it = self.transform(it)
 
-    # 최근 N일 필터가 있다면 간단히 published_at/created_at 계열로 가정 필터
-    if recency_days and recency_days > 0:
-        threshold = datetime.utcnow() - timedelta(days=recency_days)
-        # 컬럼명이 프로젝트마다 다를 수 있음: published_at, pubDate, created_at 중 하나를 우선 시도
-        _query.setdefault("$or", [
-            {"published_at": {"$gte": threshold}},
-            {"pubDate": {"$gte": threshold}},
-            {"created_at": {"$gte": threshold}},
-        ])
+            title = _prefer(self._map_field(it, "title"), "")
+            raw_content = _prefer(self._map_field(it, "content"), "")
+            content = _strip_html(raw_content)
 
-    _proj = dict(projection or {})
-    # 가져오고 싶은 대표 필드들 (없어도 동작하게 유연화)
-    if not _proj:
-        _proj = {
-            "_id": 1,
-            "title": 1,
-            "article_text": 1,  # 중요: 본문
-            "url": 1,
-            "link": 1,          # url 대체 후보
-            "category": 1,
-            "categories": 1,
-            "published_at": 1,
-            "pubDate": 1,
-            "created_at": 1,
-        }
+            if not content and not title:
+                continue
 
-    client = MongoClient(mongo_uri)
-    try:
-        cur = (client[mdb_name := db_name][collection]
-               .find(_query, _proj)
-               .sort([("_id", -1)]))
-        if limit:
-            cur = cur.limit(int(limit))
-
-        items: List[Dict[str, Any]] = []
-        for doc in cur:
-            _id = doc.get("_id")
-            guid = str(_id) if isinstance(_id, ObjectId) else (str(_id) if _id else None)
-
-            # 본문 후보: article_text > content > text
-            content = (
-                doc.get("article_text")
-                or doc.get("content")
-                or doc.get("text")
-                or ""
+            # published/processed 값은 어떤 키가 오든 하나로 수렴
+            published_any = (
+                self._map_field(it, "published_at")
+                or it.get("processed_at")
+                or it.get("published")
             )
 
-            # URL 후보: url > link
-            url = doc.get("url") or doc.get("link")
+            md = {
+                "type": "news",
+                "source": self._map_field(it, "source") or it.get("source"),
+                "url": self._map_field(it, "url") or it.get("link"),
+                "guid": self._map_field(it, "id") or str(it.get("_id") or ""),
+                "published_at": published_any,
+                "published_at_ts": _to_epoch_any(published_any),
+                "authors": self._map_field(it, "authors") or it.get("authors"),
+                "tags": self._map_field(it, "tags") or it.get("tags", []),
+                "title": title,
+                "lang": _norm_lang(self._map_field(it, "lang") or it.get("language")),
+                # 원본 보조 필드(있으면 유지)
+                "content_type": it.get("content_type"),
+                "readability_score": it.get("readability_score"),
+                "text_length": it.get("text_length"),
+                "key_entities": it.get("key_entities"),
+            }
 
-            # 카테고리 후보: category > categories[0]
-            category = doc.get("category")
-            if not category:
-                cats = doc.get("categories")
-                if isinstance(cats, list) and cats:
-                    category = cats[0]
+            page = f"{title}\n\n{content}".strip() if title else content
+            docs.append(Document(page_content=page, metadata=md))
 
-            # 발행일 후보
-            published = doc.get("published_at") or doc.get("pubDate") or doc.get("created_at")
-            if isinstance(published, datetime):
-                published_iso = published.isoformat()
-            else:
-                published_iso = str(published) if published else None
+        # 업서트/표시/중복제거 용 doc_id
+        out: List[Document] = []
+        for d in docs:
+            md = dict(d.metadata or {})
+            md["doc_id"] = _doc_id(md)
+            out.append(Document(page_content=d.page_content, metadata=md))
+        return out
 
-            items.append({
-                "guid": guid,
-                "title": doc.get("title") or "",
-                "content": content,
-                "url": url,
-                "category": category,
-                "published_at": published_iso,
-            })
-        return items
-    finally:
-        client.close()    
+    def load_news_mongo(
+        self,
+        uri: str,
+        db: str,
+        collection: str,
+        query: Optional[Mapping[str, Any]] = None,
+        limit: Optional[int] = None,
+        timeout_ms: Optional[int] = 3000,
+        projection: Optional[Mapping[str, int]] = None,
+        sort: Optional[Iterable] = None,
+    ) -> List[Document]:
+        """MongoDB redfin.extract에서 기사 읽어 Document[]로 변환"""
+        items: List[Dict[str, Any]] = []
+        try:
+            client = MongoClient(uri, serverSelectionTimeoutMS=timeout_ms)
+            coll = client[db][collection]
 
+            q = dict(query or {})
+            cur = coll.find(q, projection)
+            if sort:
+                cur = cur.sort(list(sort))
+            if limit and limit > 0:
+                cur = cur.limit(int(limit))
+
+            for doc in cur:
+                if "_id" in doc and isinstance(doc["_id"], ObjectId):
+                    doc["_id"] = str(doc["_id"])
+                items.append(doc)
+
+        except Exception as e:
+            print(f"⚠️ Mongo 로드 실패: {e}")
+            items = []
+
+        return self._to_documents(items)
+
+    def load_from_source(
+        self,
+        settings,
+        http_url: Optional[str] = None,
+        mongo_query: Optional[Mapping[str, Any]] = None,
+        limit: Optional[int] = None,
+    ) -> List[Document]:
+        """환경설정에 따라 자동으로 HTTP/Mongo에서 로드"""
+        src = (getattr(settings.news, "ingest_source", None) or "http").lower()
+        if src == "mongo":
+            return self.load_news_mongo(
+                uri=settings.mongo.uri,
+                db=settings.mongo.db,
+                collection=getattr(settings.news, "source_collection", "extract"),
+                query=mongo_query,
+                limit=limit,
+                timeout_ms=getattr(settings.mongo, "timeout_ms", 3000),
+                # 최신 우선: processed_at / published 둘 중 있는 값 기준으로 내림차순
+                sort=[("processed_at", -1), ("published", -1)]
+            )
+        # 기본 HTTP
+        url = http_url or getattr(settings.news, "api_url", None)
+        items = []
+        if url:
+            # 기존 load_news_json을 재사용하되, 반환을 _to_documents 형식과 맞추려면
+            # load_news_json 내부 로직을 건드리지 않고 그대로 사용합니다.
+            return self.load_news_json(url)
+        return []

@@ -1,116 +1,176 @@
-# src/routers/news.py
-# redfin_news: 출간 + 조회(목록/단건)
+# -*- coding: utf-8 -*-
+# =============================================================================
+# 변경 요약 (2025-09-04)
+# - LangSmith 트레이서를 라우터에서 "요청 단위"로 생성하여 services에 run_config로 전달.
+# - 프로젝트명은 settings.news.langsmith_project(없으면 settings.news.service_name) 사용.
+# - callbacks/tags/metadata 를 포함한 run_config 구조 표준화.
+# - 기존 env 기반 프로젝트 스왑(전역 컨텍스트 교체) 제거 → 동시성 안전.
+# =============================================================================
 
-from typing import Optional, Dict, Any
-from fastapi import APIRouter, HTTPException, Query, status
-from fastapi.encoders import jsonable_encoder
+from __future__ import annotations
 
-from core import settings
+from fastapi import APIRouter, HTTPException, Query
+from typing import Optional, Dict, Any, List
+
+from core.settings import settings
 from schemas.news import NewsPublishRequest
-from services.news_service import (
-    generate_news_post,
-    publish_from_feed,
-    publish_from_env,
-)
-from observability.mongo_logger import get_news_collection
+from services import news_service
 
-# >>> 추가: LangSmith 트레이서/컨피그 유틸
-from observability.langsmith import make_tracer_explicit, build_trace_config
+# [CHG] LangSmith/Callback 임포트 (LangChain 호환)
+try:
+    # LangChain 0.3+ 권장: langsmith의 LangChainTracer
+    from langchain.callbacks.tracers import LangChainTracer  # type: ignore
+    _HAS_TRACER = True
+except Exception:
+    _HAS_TRACER = False
 
 router = APIRouter(prefix="/redfin_news", tags=["redfin_news"])
 
-def _news_run_cfg(user_id: str = "notuser") -> Dict[str, Any]:
-    """뉴스 전용 LangSmith run_config 생성 유틸."""
-    tracer = make_tracer_explicit(settings.news.langsmith_project or "redfin_news-publish")
-    cfg = build_trace_config(service_name="redfin_news", user_id=user_id, plan=None)
-    cfg["callbacks"] = [tracer] if tracer else []
-    return cfg
 
-@router.post("/publish", status_code=status.HTTP_201_CREATED)
+# ----------------------- 내부 유틸 -----------------------
+
+def _make_run_config(endpoint: str, extra_tags: Optional[List[str]] = None,
+                     extra_meta: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
+    """
+    요청 단위 LangSmith 설정을 만들어 반환.
+    - callbacks: [LangChainTracer(project_name=...)]
+    - tags: 엔드포인트/서비스 태그
+    - metadata: 서비스/엔드포인트/호출 옵션
+    """
+    tags = ["news", endpoint]
+    if extra_tags:
+        tags.extend(extra_tags)
+
+    # 프로젝트명 결정
+    project = getattr(settings.news, "langsmith_project", None) \
+              or getattr(settings.news, "service_name", None) \
+              or "default"
+
+    callbacks = []
+    if _HAS_TRACER:
+        try:
+            # [CHG] 요청 단위 트레이서 생성
+            tracer = LangChainTracer(project_name=project)
+            callbacks.append(tracer)
+        except Exception:
+            # 트레이서 생성 실패 시 callbacks 비움(서비스에서 경고 로그 출력)
+            callbacks = []
+
+    metadata = {
+        "service": getattr(settings.news, "service_name", "redfin_news"),
+        "project": project,
+        "endpoint": endpoint,
+    }
+    if extra_meta:
+        metadata.update(extra_meta)
+
+    # LangChain RunnableConfig 규격
+    return {
+        "callbacks": callbacks,    # 없으면 [] (서비스에서 경고 출력)
+        "tags": tags,
+        "metadata": metadata,
+    }
+
+
+# ----------------------- 라우트 -----------------------
+
+@router.post("/publish", summary="단건 출간")
 def publish(req: NewsPublishRequest):
-    if not (req.title or req.content):
-        raise HTTPException(status_code=400, detail="title or content is required")
-
-    # >>> 추가: 뉴스 전용 run_config 전달 (요약용 체인에 기록)
-    run_cfg = _news_run_cfg(user_id="system")
-    post = generate_news_post(req, run_config=run_cfg)
-    return jsonable_encoder(post.dict())
-
-@router.post("/publish_feed")
-def publish_feed(payload: Dict[str, Any]):
-    feed_url: str = payload.get("feed_url")
-    item_path: Optional[str] = payload.get("item_path")
-    field_map: Optional[Dict[str, str]] = payload.get("field_map")
-    default_publish: bool = str(payload.get("default_publish", True)).lower() in ("1", "true", "yes", "on")
+    """
+    단건 입력을 받아 뉴스 포스트 생성(LLM 사용 여부는 설정에 따름)
+    """
     try:
-        default_top_k: int = int(payload.get("default_top_k", 6))
-    except Exception:
-        default_top_k = 6
-
-    if not feed_url:
-        raise HTTPException(status_code=400, detail="feed_url is required")
-
-    # >>> 추가: 뉴스 전용 run_config 전달
-    run_cfg = _news_run_cfg(user_id="system")
-    return publish_from_feed(
-        feed_url=feed_url,
-        item_path=item_path,
-        field_map=field_map,
-        default_publish=default_publish,
-        default_top_k=default_top_k,
-        run_config=run_cfg,
-    )
-
-@router.post("/publish_from_env")
-def publish_from_env_route():
-    try:
-        # >>> 추가: 뉴스 전용 run_config 전달
-        run_cfg = _news_run_cfg(user_id="system")
-        return publish_from_env(run_config=run_cfg)
-    except ValueError as e:
-        raise HTTPException(status_code=400, detail=str(e))
+        run_config = _make_run_config(endpoint="publish")
+        post = news_service.generate_news_post(req, feed_meta=None, run_config=run_config)  # [CHG]
+        return {"ok": True, "post": post.dict()}
     except Exception as e:
-        raise HTTPException(status_code=500, detail=f"publish_from_env failed: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
 
-@router.get("/posts")
-def list_posts(
-    limit: int = Query(10, ge=1, le=100),
-    skip: int = Query(0, ge=0),
-    status: Optional[str] = Query(None, pattern="^(draft|published)$"),
+
+@router.post("/publish_batch", summary="JSON 배열 일괄 출간")
+def publish_batch(
+    items: List[Dict[str, Any]],
+    default_publish: bool = True,
+    default_top_k: int = 6,
 ):
-    col = get_news_collection()
-    if col is None:
-        raise HTTPException(status_code=500, detail="news collection unavailable")
-
-    q: Dict[str, Any] = {}
-    if status:
-        q["status"] = status
-
     try:
-        cur = (
-            col.find(q, {"_id": 0})
-            .sort([("created_at", -1), ("updated_at", -1), ("post_id", -1)])
-            .skip(skip)
-            .limit(limit)
+        run_config = _make_run_config(endpoint="publish_batch",
+                                      extra_meta={"default_publish": default_publish, "default_top_k": default_top_k})
+        res = news_service.publish_batch(
+            items=items,
+            field_map=None,
+            default_publish=default_publish,
+            default_top_k=default_top_k,
+            run_config=run_config,  # [CHG]
         )
-    except Exception:
-        cur = (
-            col.find(q, {"_id": 0})
-            .sort([("created_at", -1)])
-            .skip(skip)
-            .limit(limit)
+        return {"ok": True, **res}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.post("/publish_from_feed", summary="外부 피드에서 로딩해 출간")
+def publish_from_feed(
+    feed_url: Optional[str] = None,
+    default_publish: bool = True,
+    default_top_k: int = 6,
+):
+    try:
+        run_config = _make_run_config(endpoint="publish_from_feed",
+                                      extra_meta={"feed_url": feed_url or settings.news.api_url})
+        res = news_service.publish_from_feed(
+            feed_url=feed_url or settings.news.api_url,
+            item_path=None,
+            field_map=None,
+            default_publish=default_publish,
+            default_top_k=default_top_k,
+            run_config=run_config,   # [CHG]
         )
+        return {"ok": True, **res}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
 
-    items = list(cur)
-    return jsonable_encoder(items)
 
-@router.get("/posts/{post_id}")
+@router.post("/publish_from_env", summary="ENV에 설정된 피드로 출간")
+def publish_from_env():
+    try:
+        run_config = _make_run_config(endpoint="publish_from_env")
+        res = news_service.publish_from_env(run_config=run_config)  # [CHG]
+        return {"ok": True, **res}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.post("/publish_from_source", summary="Mongo extract에서 읽어 출간(옵션)")
+def publish_from_source(limit: int = 30):
+    try:
+        run_config = _make_run_config(endpoint="publish_from_source",
+                                      extra_meta={"limit": limit})
+        res = news_service.publish_from_source(mongo_query=None, limit=limit)  # 이 경로는 내부에서 LLM 호출 시 tracer 사용 안함
+        # ↑ publish_from_source는 내부에서 _get_llm_for_news() → llm.invoke()를 직접 쓰므로
+        #   LangSmith에 기록하려면 거기서도 callbacks를 쓰는 구현이 필요.
+        return {"ok": True, **res}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.get("/posts/{post_id}", summary="출간 포스트 조회")
 def get_post(post_id: str):
+    from observability.mongo_logger import get_news_collection
     col = get_news_collection()
     if col is None:
-        raise HTTPException(status_code=500, detail="news collection unavailable")
-
-    doc = col.find_one({"post_id": post_id}, {"_id": 0})
+        raise HTTPException(status_code=500, detail="mongo collection unavailable")
+    doc = col.find_one({"post_id": post_id})
     if not doc:
-        raise HTTPException(status_code=404, detail="post not found")
-    return jsonable_encoder(doc)
+        raise HTTPException(status_code=404, detail="not found")
+    # ObjectId 등 직렬화 보정은 FastAPI가 해줌
+    return {"ok": True, "post": doc}
+
+
+@router.get("/posts", summary="최근 포스트 리스트")
+def list_posts(limit: int = Query(20, ge=1, le=100)):
+    from observability.mongo_logger import get_news_collection
+    col = get_news_collection()
+    if col is None:
+        raise HTTPException(status_code=500, detail="mongo collection unavailable")
+    cur = col.find({}).sort([("created_at", -1)]).limit(limit)
+    return {"ok": True, "posts": list(cur)}

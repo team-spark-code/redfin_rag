@@ -1,4 +1,4 @@
-# nureongi/indexing.py
+# src/nureongi/indexing.py
 from __future__ import annotations
 import os
 from pathlib import Path
@@ -10,6 +10,9 @@ from langchain.text_splitter import RecursiveCharacterTextSplitter
 from .loaders import NewsLoader
 from .vectorstore import create_chroma_store, VSReturn   # <- 내부 구현이 Chroma 전용으로 바뀌어 있음
 from .raptor import raptor_build_and_compress, RaptorParams
+
+# [추가] 설정 접근: ingest_source/http_url/mongo 설정 사용
+from core import settings
 
 
 # 인덱싱 시 요약에 사용할 LLM (chain.py와 동일한 우선순위)
@@ -68,6 +71,22 @@ class TextChunker:
         return splitter.split_documents(docs2)
 
 
+def _load_news_docs(news_url: Optional[str]) -> List[Document]:
+    """
+    입력 소스(HTTP/Mongo)를 settings.news.ingest_source에 따라 자동 선택해 로드.
+    - HTTP: news_url(인자) 또는 settings.news.api_url 사용
+    - Mongo: settings.mongo.{uri,db}, settings.news.source_collection('extract') 사용
+    """
+    loader = NewsLoader()
+    docs = loader.load_from_source(
+        settings=settings,
+        http_url=news_url or getattr(settings.news, "api_url", None),
+        mongo_query={},   # 필요 시 조건 추가 가능
+        limit=30        # 초기 검증 시 200 같은 값으로 제한해도 됨
+    )
+    return docs
+
+
 def build_index(
     news_url: str,
     emb,
@@ -82,36 +101,25 @@ def build_index(
     distance: str = "cosine",           # "cosine" | "l2" | "dot(ip)"
 ):
     """
-    뉴스 JSON을 불러와 청킹/요약/벡터스토어 인덱싱을 수행하는 엔트리포인트 함수.
-    
+    뉴스 JSON(HTTP) 또는 Mongo를 불러와 청킹/요약/벡터스토어 인덱싱을 수행하는 엔트리포인트 함수.
+
     단계:
-    1) NewsLoader로 뉴스 문서 로드
+    1) NewsLoader로 뉴스 문서 로드(HTTP/Mongo 자동)
     2) TextChunker로 청크 분할
     3) (옵션) RAPTOR 요약 적용 → 문서 수 축소
     4) Chroma 기반 벡터스토어 생성 및 영속화
-    
-    Args:
-        news_url: 뉴스 JSON 파일 경로 혹은 URL
-        emb: HuggingFaceEmbeddings 인스턴스
-        chunk_size: 청크 최대 길이
-        chunk_overlap: 청크 간 중첩
-        index_mode: 'title+summary' 또는 'summary_only'
-        use_raptor: RAPTOR 요약 여부
-        raptor_levels: RAPTOR 트리 깊이
-        collection_name: Chroma 컬렉션 이름
-        chroma_dir: 영속 디렉터리 경로
-        distance: 벡터 거리 측정 방식 ("cosine"/"l2"/"ip")
-
-    Returns:
-        (vectorstore, info)
-        - vectorstore: 생성된 Chroma 객체
-        - info: backend, 경로, 문서 수 등의 메타정보
     """
-    # 1) 로드
-    loader = NewsLoader()
-    news_docs = loader.load_news_json(news_url)
+    # 1) 로드 (HTTP/Mongo 자동 분기)
+    #    - HTTP: news_url 또는 settings.news.api_url 사용
+    #    - Mongo: settings.news.ingest_source='mongo'이면 redfin.extract에서 로드
+    news_docs = _load_news_docs(news_url)
     if not news_docs:
-        raise SystemExit("뉴스 문서가 0건입니다. NEWS_API_URL 또는 API 응답을 확인하세요.")
+        src = getattr(settings.news, "ingest_source", "http")
+        raise SystemExit(
+            f"뉴스 문서가 0건입니다. ingest_source='{src}'. "
+            f"HTTP인 경우 NEWS__API_URL / 인자로 받은 news_url을, "
+            f"Mongo인 경우 redfin.{getattr(settings.news, 'source_collection', 'extract')} 컬렉션을 확인하세요."
+        )
 
     # 2) 청크
     chunker = TextChunker(chunk_size=chunk_size, chunk_overlap=chunk_overlap, index_mode=index_mode)
@@ -144,12 +152,10 @@ def build_index(
 
     # 4) Chroma 벡터스토어 구축
     coll = collection_name or os.getenv("CHROMA_COLLECTION", "redfin_vectordb")
-    # persist 디렉터리는 vectorstore 쪽에서 CHROMA_DIR 기본값을 사용함
     vsr: VSReturn = create_chroma_store(
         embedding=emb,
         collection_name=coll,
         docs=chunks,
-        # 아래 인자들은 Chroma 전용 구현에서 무시되지만, 인터페이스 유지 차원에서 남겨둠
         persist_dir=chroma_dir or os.getenv("CHROMA_DIR", "./.chroma"),
         distance=distance,
     )

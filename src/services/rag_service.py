@@ -192,3 +192,61 @@ def run_query(
             },
         },
     }
+    
+# ─────────────────────────────────────────────────────────────────────
+#                     자동 인덱스 초기화(HTTP/Mongo 분기)
+# ─────────────────────────────────────────────────────────────────────
+def init_index_auto() -> Dict[str, Any]:
+    """
+    settings.news.ingest_source 값에 따라 HTTP/Mongo에서 자동으로 입력을 로드해 인덱스를 초기화한다.
+    - ingest_source == "http": settings.news.api_url 이 없으면 '스킵'
+    - ingest_source == "mongo": api_url이 없어도 '스킵하지 않고' 바로 인덱싱 수행
+    - 최신 30개 제한은 nureongi/indexing.py 의 _load_news_docs(limit=30)에서 처리한다.
+    """
+    global EMB, VSTORE, RETRIEVER, _CHAIN_CACHE
+    from core import settings
+
+    # 임베딩 핸들 준비(기존 init_index와 동일)
+    EMB = build_embedder(settings.rag.emb_model)
+
+    # 입력 소스 판별
+    ingest = (getattr(settings.news, "ingest_source", "http") or "http").lower()
+    news_url: Optional[str] = None
+
+    # HTTP 모드: URL 없으면 스킵 (기존 동작 유지)
+    if ingest == "http":
+        news_url = getattr(settings.news, "api_url", None)
+        if not news_url:
+            return {"ok": False, "reason": "settings.news.api_url is empty (ingest_source=http)"}
+
+    # build_index()는 indexing._load_news_docs()를 통해 HTTP/Mongo 자동 분기
+    # - Mongo 모드일 때 news_url은 무시된다.
+    VSTORE, info = build_index(
+        news_url=news_url or "",
+        emb=EMB,
+        chunk_size=500,
+        chunk_overlap=120,
+        index_mode="summary_only",
+        use_raptor=True,
+        distance="cosine",
+    )
+
+    # 기본 retriever 준비 (기존과 동일: MMR)
+    RETRIEVER = as_retriever(
+        VSTORE,
+        search_type="mmr",
+        search_kwargs={"k": 8, "fetch_k": 60, "lambda_mult": 0.25},
+    )
+    _CHAIN_CACHE.clear()
+
+    # 메타정보 반환
+    n_docs = 0
+    try:
+        if hasattr(VSTORE, "_collection"):
+            c = VSTORE._collection.count()
+            n_docs = int(c or 0)
+    except Exception:
+        pass
+
+    return {"ok": True, "n_docs": n_docs, **(info or {})}
+

@@ -38,7 +38,22 @@ class RagSettings(BaseModel):
 # [추가] NewsSettings에 인덱스/Enrichment 옵션을 명시적으로 둡니다.
 class NewsSettings(BaseModel):
     prompt_path: str = "src/prompts/templates/news_publish_v1.md"
-    api_url: str | None = None
+
+    # 기존: API URL (HTTP 사용 시에만 의미)
+    api_url: str | None = Field(default=None, validation_alias=AliasChoices("NEWS__API_URL", "API_URL"))
+
+    # [추가] 입력 소스 스위치 ("http" | "mongo")
+    ingest_source: str = Field(
+        default="mongo",
+        validation_alias=AliasChoices("NEWS__INGEST_SOURCE")
+    )
+
+    # [추가] Mongo 입력 컬렉션명 (기본: extract)
+    source_collection: str = Field(
+        default="extract",
+        validation_alias=AliasChoices("NEWS__SOURCE_COLLECTION")
+    )
+    
     collection: str = "news_logs"   # [추가] 뉴스 전용 Chroma 컬렉션명
     persist_dir: str = "./.chroma"         # [추가] Chroma 저장 경로(공용 가능)
     use_llm: bool = True
