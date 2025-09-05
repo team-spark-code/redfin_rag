@@ -33,6 +33,11 @@ class AppSettings(BaseModel):
 
 class RagSettings(BaseModel):
     emb_model: str = Field(default="BAAI/bge-base-en-v1.5", validation_alias=AliasChoices("EMB_MODEL"))
+    
+    langsmith_project: str = Field(
+        default="redfin_target-insight",
+        validation_alias=AliasChoices("LANGCHAIN_PROJECT_REDFIN_TARGET", "RAG__LANGSMITH_PROJECT"),
+    )
 
 
 # [추가] NewsSettings에 인덱스/Enrichment 옵션을 명시적으로 둡니다.
@@ -62,7 +67,10 @@ class NewsSettings(BaseModel):
     default_publish: bool = True
 
     # 관측/네이밍
-    langsmith_project: str = "redfin_news-publish"
+    langsmith_project: str = Field(
+        default="redfin_news-publish",
+        validation_alias=AliasChoices("LANGCHAIN_PROJECT_REDFIN_NEWS", "NEWS__LANGSMITH_PROJECT"),
+    )
     service_name: str = "redfin_news"
 
     # [추가] 컨텍스트 보강(선택) — 기본은 False로 꺼둠(출간은 편집/요약만)
@@ -126,3 +134,9 @@ class Settings(BaseSettings):
 # 전역 인스턴스 (권장 임포트: from core import settings)
 settings = Settings()
 __all__ = ["settings", "Settings", "AppSettings", "RagSettings", "NewsSettings", "MongoSettings"]
+
+# src/core/settings.py (파일 끝 또는 앱 시작 지점에서 한 번만)
+if __name__ == "__main__" or True:
+    import os
+    print("[boot] LANGCHAIN_PROJECT_REDFIN_NEWS =", os.getenv("LANGCHAIN_PROJECT_REDFIN_NEWS"))
+    print("[boot] settings.news.langsmith_project =", Settings().news.langsmith_project)

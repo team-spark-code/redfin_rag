@@ -83,7 +83,7 @@ async def lifespan(app: FastAPI):
                 )
                 print("[news fixed index]", res_fixed)
             else:
-                print("[news fixed index] skipped: no docs in collection")
+                print("[news fixed index] skipped: no docs in news api url")
         else:
             print("[news fixed index] skipped: function not found")
     except Exception as e:
