@@ -16,11 +16,15 @@ AI 관련 기사/문서를 대상으로 **RAG(Retrieval-Augmented Generation)** 
 * **MongoDB**:
 
   * `redfin.rag_logs` — 모든 `/redfin_target-insight` 요청/응답 자동 저장
-  * `redfin.news_posts` — 뉴스 출간 결과 저장
+  * `redfin.news_semantic_v1` — 뉴스 출간 결과 저장
 * **뉴스 출간**:
 
   * 템플릿: `prompts/news.py` (Smart Brevity 한국어 고정)
   * JSON 파싱/보증: `schemas/news_llm.py` (Pydantic) + 번역 레이어
+* **프롬프트 관리**:
+
+  * `prompts/personas/*.md` — 7개 페르소나별 프롬프트
+  * `prompts/system_insight.md` — 시스템 프롬프트
 * **주요 엔드포인트**:
 
   * `POST /redfin_target-insight` (RAG 질의)
@@ -36,8 +40,9 @@ AI 관련 기사/문서를 대상으로 **RAG(Retrieval-Augmented Generation)** 
 src/
 ├─ api_rag.py                # FastAPI 엔트리포인트
 ├─ core/
-│  ├─ settings.py            # 환경변수 로딩
-│  └─ lifespan.py            # startup/shutdown 훅 (인덱스+Mongo 초기화)
+│  ├─ app.py                 # FastAPI 앱 생성, CORS/로깅 설정
+│  ├─ settings.py            # 환경변수 로딩 (Pydantic v2 서브모델 구조)
+│  └─ lifespan.py            # startup/shutdown 훅 (Mongo + 인덱스 초기화)
 ├─ routers/
 │  ├─ redfin.py              # /redfin_target-insight, /logs/save
 │  └─ news.py                # /redfin_news/* 라우트
@@ -46,15 +51,17 @@ src/
 │  ├─ news_service.py        # 뉴스 출간, Pydantic 파싱 + 한국어 보증
 │  └─ strategy.py            # 검색/LLM 전략 선택
 ├─ nureongi/
-│  ├─ loaders.py             # 데이터 로더 (published_at_ts 메타 추가)
+│  ├─ loaders.py             # 데이터 로더 (article_text 매핑 지원)
 │  ├─ indexing.py            # 청크/인덱싱 파이프라인
 │  ├─ vectorstore.py         # Chroma/FAISS VectorStore
 │  ├─ chain.py               # 리트리버 + 생성 체인
 │  └─ raptor.py              # RAPTOR 요약 트리
 ├─ prompts/
-│  └─ news.py                # Smart Brevity 한국어 템플릿
+│  ├─ news.py                # Smart Brevity 한국어 템플릿
+│  ├─ system_insight.md      # 시스템 프롬프트
+│  └─ personas/              # 7개 페르소나 프롬프트(.md)
 ├─ observability/
-│  ├─ mongo_logger.py        # MongoDB 로깅 유틸
+│  ├─ mongo_logger.py        # MongoDB 로깅 유틸 (ensure_collections)
 │  └─ langsmith.py           # LangSmith 연동
 ├─ schemas/
 │  ├─ query.py               # 요청 모델
@@ -63,7 +70,7 @@ src/
 │  └─ news_llm.py            # LLM 출력 파싱 모델
 ├─ tesst/
 │  └─ test_news_view.html    # 단건 뉴스 뷰어
-├─ test_rag_client.html      # RAG 테스트 클라이언트 (자동 Mongo 로깅)
+├─ test_rag_client.html      # RAG 테스트 클라이언트
 ├─ .chroma/                  # Chroma 퍼시스턴스 디렉터리
 └─ faiss_index/              # FAISS 인덱스(옵션)
 ```
@@ -97,10 +104,10 @@ RAPTOR_TARGET_K=3
 RAPTOR_INDEX_MODE=summary_only
 
 # MongoDB
-MONGO_URI=mongodb://192.168.0.123:27017
+MONGODB_URI=mongodb://192.168.0.123:27017
 MONGO_DB=redfin
 MONGO_COL=rag_logs
-NEWS_MONGO_COL=news_posts
+NEWS_COL=news_semantic_v1
 
 # 뉴스 출간
 NEWS_API_URL=http://.../feed.json
@@ -108,6 +115,7 @@ NEWS_FEED_FIELD_MAP={"title":"title","content":"article_text","url":"link","id":
 NEWS_DEFAULT_PUBLISH=1
 NEWS_TOP_K=6
 NEWS_RECENCY_DAYS=14
+NEWS__SEED_ON_STARTUP=true
 ```
 
 ---
@@ -154,7 +162,7 @@ docker run --env-file .env -p 8001:8001 redfin_rag
 
 ### 2) `POST /redfin_news/publish_from_env`
 
-뉴스 피드에서 자동 기사 생성 후 `redfin.news_posts`에 저장.
+뉴스 피드에서 자동 기사 생성 후 `redfin.news_semantic_v1`에 저장.
 
 ```bash
 curl -X POST "http://localhost:8001/redfin_news/publish_from_env"
@@ -175,7 +183,7 @@ curl "http://localhost:8001/redfin_news/posts?limit=1"
 ### `test_rag_client.html`
 
 * 요청 보내기 → API 응답 확인
-* 자동으로 MongoDB에 로깅됨 (수동 저장 버튼 제거됨)
+* 자동으로 MongoDB에 로깅됨
 
 ### `tesst/test_news_view.html`
 
@@ -191,7 +199,10 @@ python -m http.server 5500
 ## 로깅/관측
 
 * **자동 저장**: `/redfin_target-insight`, `/redfin_news/publish*` 응답 모두 MongoDB 기록
-* **LangSmith 연동**: `.env`에 `LANGSMITH_PROJECT=API_RAG` 설정 시 트레이싱
+* **LangSmith 연동**:
+
+  * 프로젝트명 — `redfin_target-insight`, `redfin_news-publish`
+  * 요청 단위 `run_config` 기반 tracer 주입 (전역 env 스왑 금지)
 
 ---
 
@@ -211,6 +222,7 @@ python -m http.server 5500
 
 * 2025-08-27: `api_rag.py` 최초 구현, MongoDB 자동 저장 적용
 * 2025-08-28: `redfin_news` 파이프라인 추가, Smart Brevity 한국어 템플릿 추가
-* 2025-08-28: 기사 출간 언어 문제 분석
- 
-
+* 2025-09-01: `core/settings.py` Pydantic v2 서브모델 구조 적용
+* 2025-09-01: 뉴스 컬렉션 `news_semantic_v1`로 통일, 시드 제어 옵션(`NEWS__SEED_ON_STARTUP`)
+* 2025-09-02: LangSmith 프로젝트명 기능별 분리(`redfin_target-insight`, `redfin_news-publish`)
+* 2025-09-02: 프롬프트 관리 구조 개선(`prompts/personas/*.md`, `system_insight.md`)
