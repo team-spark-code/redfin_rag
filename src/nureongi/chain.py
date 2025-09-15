@@ -90,81 +90,28 @@ def _build_stuff_chain(retriever: Any, persona: str, llm):
 # 전략 2) map_refine
 # ------------------------------------------
 def _build_map_refine_chain(retriever: Any, persona: str, llm):
-    """
-    map_refine 체인
-    - Map 단계: 문서별 프롬프트를 구성해 llm.batch(...)로 병렬 호출하여 부분 응답 생성
-    - Refine 단계: 부분 응답들을 통합 템플릿으로 정리하여 최종 응답 생성
-    - 출력: validate_and_fix()로 포맷 보정
-    """
-    import time
+    # 1) 최종 단계에서만 사용할 페르소나/시스템 프롬프트 빌더
+    to_prompt_final = _make_to_prompt(persona)
 
-    to_prompt = _make_to_prompt(persona)
+    # 2) Map: 증거 추출용(형식/페르소나 금지)
+    EXTRACT_TMPL = PromptTemplate.from_template(
+        """너의 임무는 '증거 추출'이다. 서식/문체/섹션 강제 금지.
+검증 가능한 앵커(숫자·날짜·기관·링크) 포함 사실만 간결한 불릿 1~5개로 뽑아라.
+근거가 불충분하면 해당 불릿은 출력하지 말라(플레이스홀더 금지).
 
-    # ---- 운영 튜닝 파라미터(환경변수) ----
-    MAP_REFINE_MAX_DOCS = int(os.getenv("MAP_REFINE_MAX_DOCS", "4"))     # Map 단계에서 처리할 문서 상한
-    MAP_MAX_CONCURRENCY = int(os.getenv("MAP_MAX_CONCURRENCY", "4"))     # llm.batch 동시성
-    REFINE_MAX_PARTIALS = int(os.getenv("REFINE_MAX_PARTIALS", "6"))     # Refine에 투입할 부분 응답 상한
-    RETRY_MAX = int(os.getenv("MAP_BATCH_RETRY_MAX", "2"))               # 429 등 일시 오류 재시도 횟수
-    RETRY_BACKOFF = float(os.getenv("MAP_BATCH_RETRY_BACKOFF", "1.5"))   # 지수 백오프 계수
+[질문]
+{question}
 
-    def _map_step(x: dict):
-        q = x["question"]
+[컨텍스트]
+{context}
 
-        # 1) 리트리브(+RAPTOR 압축; 실패 시 leaf 폴백)
-        docs = _retrieve_with_raptor(retriever, q, llm)
+[출력] 불릿만 나열"""
+    )
 
-        # 2) 상위 N개만 Map 처리(지연·비용 제어)
-        docs = docs[:MAP_REFINE_MAX_DOCS]
-
-        # 3) 문서별 프롬프트 구성
-        prompts: List[str] = []
-        for d in docs:
-            ctx_one = format_ctx([d])
-            prompts.append(to_prompt({"question": q, "context": ctx_one}))
-
-        # 4) 병렬 호출(batch) + 간단 재시도(429 대비)
-        attempt = 0
-        results = None
-        last_exc: Exception | None = None
-
-        while attempt <= RETRY_MAX:
-            try:
-                results = llm.batch(
-                    prompts,
-                    config={"max_concurrency": MAP_MAX_CONCURRENCY},
-                )
-                break
-            except Exception as e:
-                last_exc = e
-                # 지수 백오프
-                sleep_s = (RETRY_BACKOFF ** attempt)
-                time.sleep(sleep_s)
-                attempt += 1
-
-        # 5) 재시도 모두 실패하면 최소 직렬 폴백
-        if results is None:
-            partials_fallback: List[str] = []
-            for p in prompts:
-                try:
-                    ans = llm.invoke(p)
-                    content = getattr(ans, "content", str(ans))
-                    partials_fallback.append(content)
-                except Exception:
-                    continue
-            return {"question": q, "partials": partials_fallback}
-
-        # 6) 정상 결과 수집(AIMessage.content 우선)
-        partials: List[str] = []
-        for r in results:
-            content = getattr(r, "content", str(r))
-            partials.append(content)
-
-        return {"question": q, "partials": partials}
-
+    # 3) Refine: 부분 응답 통합(형식 강제 금지)
     REFINE_TMPL = PromptTemplate.from_template(
-        """아래 부분 응답들을 사실관계가 맞도록 중복 없이 통합하라.
-- 허위/추측 배제, 수치·날짜·고유명사 유지
-- 핵심만 간결하게 한국어로 작성
+        """아래 부분 응답들을 사실 관계를 유지하며 중복 없이 통합하라.
+추정·과장 금지, 수치/날짜/고유명사 보존, 간결하게.
 
 [질문]
 {question}
@@ -172,25 +119,72 @@ def _build_map_refine_chain(retriever: Any, persona: str, llm):
 [부분 응답들]
 {partials}
 
-[출력]
-"""
+[출력] 통합 노트만"""
     )
+
+    # 운영 파라미터
+    MAP_REFINE_MAX_DOCS = int(os.getenv("MAP_REFINE_MAX_DOCS", "4"))
+    MAP_MAX_CONCURRENCY = int(os.getenv("MAP_MAX_CONCURRENCY", "4"))
+    REFINE_MAX_PARTIALS = int(os.getenv("REFINE_MAX_PARTIALS", "6"))
+    RETRY_MAX = int(os.getenv("MAP_BATCH_RETRY_MAX", "2"))
+    RETRY_BACKOFF = float(os.getenv("MAP_BATCH_RETRY_BACKOFF", "1.5"))
+
+    def _map_step(x: dict):
+        q = x["question"]
+        docs = _retrieve_with_raptor(retriever, q, llm)[:MAP_REFINE_MAX_DOCS]
+
+        prompts: List[str] = []
+        for d in docs:
+            ctx_one = format_ctx([d])
+            prompts.append(EXTRACT_TMPL.format(question=q, context=ctx_one))
+
+        attempt, results = 0, None
+        while attempt <= RETRY_MAX:
+            try:
+                results = llm.batch(prompts, config={"max_concurrency": MAP_MAX_CONCURRENCY})
+                break
+            except Exception:
+                time.sleep((RETRY_BACKOFF ** attempt))
+                attempt += 1
+
+        partials: List[str] = []
+        if results is None:
+            for p in prompts:
+                try:
+                    msg = llm.invoke(p)
+                    partials.append(getattr(msg, "content", str(msg)))
+                except Exception:
+                    pass
+        else:
+            for r in results:
+                partials.append(getattr(r, "content", str(r)))
+
+        # 공백/빈 문자열 제거
+        partials = [s for s in partials if s and s.strip()]
+        return {"question": q, "partials": partials}
 
     def _refine_step(x: dict):
         q = x["question"]
-        # Refine에 투입할 부분 응답도 상한 적용(입력 토큰 폭증 방지)
         parts = (x.get("partials") or [])[:REFINE_MAX_PARTIALS]
         joined = "\n\n---\n\n".join(parts) if parts else ""
-        prompt = REFINE_TMPL.format(question=q, partials=joined)
-        return prompt
+        return REFINE_TMPL.format(question=q, partials=joined)
+
+    def _finalize_step(x: str):
+        # x: 통합 노트(문자열)
+        # 최종 단계에서만 시스템/페르소나/형식 적용
+        final_prompt = to_prompt_final({"question": "", "context": x})
+        msg = llm.invoke(final_prompt)
+        return getattr(msg, "content", str(msg))
 
     chain = (
         {"question": RunnablePassthrough()}
-        | RunnableLambda(_map_step)
-        | RunnableLambda(_refine_step)
+        | RunnableLambda(_map_step)       # Map
+        | RunnableLambda(_refine_step)    # Refine
         | llm
         | StrOutputParser()
-        | RunnableLambda(lambda s: validate_and_fix(s, max_issues=7))   # 최종 포맷/품질 보정
+        | RunnableLambda(_finalize_step)  # Finalize(여기서만 system_insight/페르소나 적용)
+        | StrOutputParser()
+        # 필요 시 여기서 validate_and_fix(...) 1회만 적용
     )
     return chain
 
