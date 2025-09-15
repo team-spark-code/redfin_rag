@@ -102,7 +102,7 @@ class MongoSettings(BaseModel):
       - timeout_ms: MONGO_TIMEOUT_MS
     """
     uri: str = Field(
-        default="mongodb+srv://redfin:Redfin7620!@redfin-mongo-1.0sfpqw7.mongodb.net/?retryWrites=true&w=majority&appName=redfin-mongo-1",
+        default= None,
         validation_alias=AliasChoices("MONGODB_URI", "MONGO_URI")
     )
     db: str = Field(default="redfin", validation_alias=AliasChoices("MONGO_DB"))
