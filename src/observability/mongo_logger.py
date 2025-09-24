@@ -25,7 +25,7 @@ def _ensure_client() -> Optional[MongoClient]:
             socketTimeoutMS=to,
         )
         _client.admin.command("ping")
-        print(f"[mongo] connected → {uri} (db={settings.mongo.db})")
+        print(f"[mongo] connected -> {uri} (db={settings.mongo.db})")
         return _client
     except Exception as e:
         print(f"[mongo] connect failed: {e} (uri={uri})")
@@ -34,7 +34,7 @@ def _ensure_client() -> Optional[MongoClient]:
 
 
 def init_mongo() -> None:
-    _ensure_client()  # 로그로 확인
+    _ensure_client()
 
 
 def get_db():
@@ -55,16 +55,8 @@ def logs_collection_name() -> str:
     return settings.mongo.logs_collection
 
 
-def news_collection_name() -> str:
-    return settings.mongo.news_collection
-
-
 def get_logs_collection():
     return get_collection(logs_collection_name())
-
-
-def get_news_collection():
-    return get_collection(news_collection_name())
 
 
 def insert_doc(col_name: str, doc: Dict[str, Any]) -> Optional[str]:
@@ -104,10 +96,7 @@ def log_api_event(
 
 
 def ensure_collections() -> None:
-    """
-    필요한 컬렉션/인덱스 보장.
-    Mongo가 미가용이면 경고만 찍고 종료(앱 기동은 계속).
-    """
+    """Ensure required collections and indexes exist."""
     db = get_db()
     if db is None:
         print("[mongo] unavailable; skip ensure_collections")
@@ -123,36 +112,18 @@ def ensure_collections() -> None:
         return
 
     logs_name = logs_collection_name()
-    news_name = news_collection_name()
 
-    # 컬렉션 생성
     if logs_name not in existing:
         try:
             db.create_collection(logs_name)
         except Exception:
             pass
-    if news_name not in existing:
-        try:
-            db.create_collection(news_name)
-        except Exception:
-            pass
 
-    # 인덱스
     try:
         db[logs_name].create_index([("endpoint", 1), ("created_at", -1)])
         db[logs_name].create_index([("extra.request_meta.user_id", 1), ("created_at", -1)])
         db[logs_name].create_index([("extra.client.ip", 1), ("created_at", -1)])
         db[logs_name].create_index([("extra.duration_ms", -1), ("created_at", -1)])
         db[logs_name].create_index([("extra.retrieval.raptor_applied", 1), ("created_at", -1)])
-    except Exception:
-        pass
-
-    try:
-        db[news_name].create_index([("post_id", 1)], unique=True, sparse=True)
-        db[news_name].create_index([("created_at", -1)])
-        db[news_name].create_index([("category", 1), ("created_at", -1)])
-        db[news_name].create_index([("tags", 1), ("created_at", -1)])
-        db[news_name].create_index([("article_code", 1)], unique=True, sparse=True)
-        db[news_name].create_index([("url", 1)], unique=True, sparse=True)
     except Exception:
         pass

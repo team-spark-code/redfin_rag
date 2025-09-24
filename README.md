@@ -1,128 +1,82 @@
-# redfin\_rag — FastAPI 기반 RAG + 뉴스 출간 API
+﻿# redfin_rag - FastAPI 기반 RAG API
 
-AI 관련 기사/문서를 대상으로 **RAG(Retrieval-Augmented Generation)** 파이프라인과 **자동 뉴스 출간 기능**을 제공하는 백엔드입니다.
-1차 기능은 `redfin_target-insight`, 확장 기능은 `redfin_news`입니다.
-
----
-
-## 핵심 요약
-
-* **서버**: FastAPI (Uvicorn)
-* **임베딩**: BGE-base (`BAAI/bge-base-en-v1.5`)
-* **VectorStore**: **ChromaDB** (cosine, 기본), 실험용 FAISS 인덱스 지원
-* **Retriever**: `as_retriever(k|fetch_k|lambda_mult|filter)` with MMR
-* **LLM**: .env 설정에 따라 플러그블 (예: OpenAI gpt-4.1-mini, Gemini 등)
-* **CORS**: `ALLOWED_ORIGINS=["*"]` 기본
-* **MongoDB**:
-
-  * `redfin.rag_logs` — 모든 `/redfin_target-insight` 요청/응답 자동 저장
-  * `redfin.news_semantic_v1` — 뉴스 출간 결과 저장
-* **뉴스 출간**:
-
-  * 템플릿: `prompts/news.py` (Smart Brevity 한국어 고정)
-  * JSON 파싱/보증: `schemas/news_llm.py` (Pydantic) + 번역 레이어
-* **프롬프트 관리**:
-
-  * `prompts/personas/*.md` — 7개 페르소나별 프롬프트
-  * `prompts/system_insight.md` — 시스템 프롬프트
-* **주요 엔드포인트**:
-
-  * `POST /redfin_target-insight` (RAG 질의)
-  * `POST /redfin_news/publish_from_env` (뉴스 출간 → Mongo 저장)
-  * `GET /redfin_news/posts`, `GET /redfin_news/posts/{post_id}`
-  * `GET /healthz` (헬스체크)
+Redfin 내부 지식을 대상으로 **Retrieval-Augmented Generation(RAG)** 답변을 제공하는 FastAPI 백엔드입니다. 뉴스 출간/분류 등 부가 기능은 제거되어 `/redfin_target-insight` 엔드포인트만 제공합니다.
 
 ---
 
-## 디렉터리 구조(발췌)
+## 주요 특징
+
+- **서버**: FastAPI + Uvicorn
+- **임베딩**: `BAAI/bge-base-en-v1.5`
+- **VectorStore**: 기본 Chroma(cosine), 필요 시 FAISS 사용 가능
+- **Retriever**: LangChain `as_retriever` 기반 MMR 검색
+- **LLM**: OpenAI 또는 Google Generative AI(환경 변수로 선택)
+- **관측**: MongoDB 로그 적재, LangSmith 트레이싱 지원
+
+---
+
+## 디렉터리 구조
 
 ```
 src/
-├─ api_rag.py                # FastAPI 엔트리포인트
-├─ core/
-│  ├─ app.py                 # FastAPI 앱 생성, CORS/로깅 설정
-│  ├─ settings.py            # 환경변수 로딩 (Pydantic v2 서브모델 구조)
-│  └─ lifespan.py            # startup/shutdown 훅 (Mongo + 인덱스 초기화)
-├─ routers/
-│  ├─ redfin.py              # /redfin_target-insight, /logs/save
-│  └─ news.py                # /redfin_news/* 라우트
-├─ services/
-│  ├─ rag_service.py         # RAG 쿼리 실행 + 뉴스용 날짜필터(ts)
-│  ├─ news_service.py        # 뉴스 출간, Pydantic 파싱 + 한국어 보증
-│  └─ strategy.py            # 검색/LLM 전략 선택
-├─ nureongi/
-│  ├─ loaders.py             # 데이터 로더 (article_text 매핑 지원)
-│  ├─ indexing.py            # 청크/인덱싱 파이프라인
-│  ├─ vectorstore.py         # Chroma/FAISS VectorStore
-│  ├─ chain.py               # 리트리버 + 생성 체인
-│  └─ raptor.py              # RAPTOR 요약 트리
-├─ prompts/
-│  ├─ news.py                # Smart Brevity 한국어 템플릿
-│  ├─ system_insight.md      # 시스템 프롬프트
-│  └─ personas/              # 7개 페르소나 프롬프트(.md)
-├─ observability/
-│  ├─ mongo_logger.py        # MongoDB 로깅 유틸 (ensure_collections)
-│  └─ langsmith.py           # LangSmith 연동
-├─ schemas/
-│  ├─ query.py               # 요청 모델
-│  ├─ response.py            # 응답 모델
-│  ├─ news.py                # NewsPublishRequest/NewsPost
-│  └─ news_llm.py            # LLM 출력 파싱 모델
-├─ tesst/
-│  └─ test_news_view.html    # 단건 뉴스 뷰어
-├─ test_rag_client.html      # RAG 테스트 클라이언트
-├─ .chroma/                  # Chroma 퍼시스턴스 디렉터리
-└─ faiss_index/              # FAISS 인덱스(옵션)
+├── api_rag.py           # FastAPI 엔트리포인트
+├── core/
+│   ├── app.py           # FastAPI 앱 생성 및 CORS 설정
+│   ├── lifespan.py      # Mongo 연결 + RAG 인덱스 초기화
+│   └── settings.py      # Pydantic 기반 환경설정 로더
+├── routers/
+│   └── redfin.py        # POST /redfin_target-insight 라우터
+├── schemas/
+│   ├── query.py         # QueryRequest 스키마
+│   └── response.py      # QueryResponseV1 스키마
+├── services/
+│   ├── rag_service.py   # 인덱스 준비 및 질의 실행
+│   └── strategy.py      # 질문 의도 기반 검색 파라미터 결정
+├── nureongi/            # 로더·인덱싱·체인 유틸리티 모음
+└── observability/
+    ├── mongo_logger.py  # MongoDB 로깅 헬퍼
+    └── langsmith.py     # LangSmith 트레이서 구성
 ```
+
+테스트 도구: `test/test_persona_rag.html`로 브라우저에서 API 응답을 빠르게 확인할 수 있습니다.
 
 ---
 
-## 환경 변수(.env)
+## 환경 변수(.env 예시)
 
 ```dotenv
-# LLM 백엔드
-LLM_BACKEND=openai
-OPENAI_MODEL=gpt-4.1-mini
-GEMINI_MODEL=gemini-2.0-flash
+# LLM 백엔드 키
+OPENAI_API_KEY=...
+# 또는
+GOOGLE_API_KEY=...
 
-# 임베딩
+# 임베딩 모델
 EMB_MODEL=BAAI/bge-base-en-v1.5
 
-# 서버
+# 서버 설정
 HOST=0.0.0.0
 PORT=8001
 ALLOWED_ORIGINS=["*"]
 
 # VectorStore
-VECTORSTORE_PROVIDER=chroma
 CHROMA_DIR=./src/.chroma
 FAISS_DIR=./src/faiss_index
 
-# RAPTOR
-RAPTOR_ENABLED=true
-RAPTOR_TARGET_K=3
-RAPTOR_INDEX_MODE=summary_only
-
 # MongoDB
-MONGODB_URI=mongodb://192.168.0.123:27017
+MONGODB_URI=mongodb://localhost:27017
 MONGO_DB=redfin
 MONGO_COL=rag_logs
-NEWS_COL=news_semantic_v1
+MONGO_TIMEOUT_MS=3000
 
-# 뉴스 출간
-NEWS_API_URL=http://.../feed.json
-NEWS_FEED_FIELD_MAP={"title":"title","content":"article_text","url":"link","id":"guid"}
-NEWS_DEFAULT_PUBLISH=1
-NEWS_TOP_K=6
-NEWS_RECENCY_DAYS=14
-NEWS__SEED_ON_STARTUP=true
+# RAG 소스 로딩
+NEWS_INGEST_SOURCE=mongo       # 또는 http
+NEWS_SOURCE_COLLECTION=extract # ingest_source=mongo일 때 사용
+NEWS_API_URL=http://...        # ingest_source=http일 때 사용
 ```
 
 ---
 
-## 실행
-
-### 로컬
+## 실행 방법
 
 ```bash
 pip install -r requirements.txt
@@ -130,99 +84,59 @@ cd src
 python api_rag.py
 ```
 
-* 헬스체크: `GET http://localhost:8001/healthz`
-* 문서 UI: `GET http://localhost:8001/docs`
+- 헬스 체크: `GET http://localhost:8001/healthz`
+- 문서 UI: `GET http://localhost:8001/docs`
 
-### Docker (선택)
-
-```bash
-docker build -t redfin_rag .
-docker run --env-file .env -p 8001:8001 redfin_rag
-```
+Docker를 사용할 경우 `docker build -t redfin_rag .` 후 `docker run --env-file .env -p 8001:8001 redfin_rag`로 실행합니다.
 
 ---
 
 ## API
 
-### 1) `POST /redfin_target-insight`
+### `POST /redfin_target-insight`
 
 ```json
 {
-  "question": "최근 LLM 경량화 동향을 요약해줘.",
-  "top_k": 5,
-  "fetch_k": 20,
-  "lambda_mult": 0.5,
-  "persona": "ai_industry_professional"
+  "question": "최근 LLM 컴팩트 모델 동향을 요약해줘.",
+  "top_k": 8,
+  "fetch_k": 60,
+  "lambda_mult": 0.25,
+  "persona": "ai_industry_professional",
+  "strategy": "auto"
 }
 ```
 
-응답은 자동으로 `redfin.rag_logs`에 기록.
+- 응답은 LangChain 체인을 거쳐 생성되며 MongoDB(`rag_logs`)에 기록됩니다.
+- 페르소나, 전략, 출처 메타데이터가 함께 반환됩니다.
+
+헬스 체크: `GET /healthz`는 `{ "ok": true }`를 반환합니다.
 
 ---
 
-### 2) `POST /redfin_news/publish_from_env`
+## 관측 및 모니터링
 
-뉴스 피드에서 자동 기사 생성 후 `redfin.news_semantic_v1`에 저장.
-
-```bash
-curl -X POST "http://localhost:8001/redfin_news/publish_from_env"
-```
+- **MongoDB**: `rag_logs` 컬렉션에 요청/응답 메타데이터 저장
+- **LangSmith**: `LANGCHAIN_PROJECT_REDFIN_TARGET` 환경 변수로 프로젝트명 지정
+- **PII 마스킹**: `ENABLE_PII_REDACTION=true` 설정 시 이메일/전화번호/숫자를 단순 마스킹
 
 ---
 
-### 3) `GET /redfin_news/posts`
+## 개발 메모
 
-```bash
-curl "http://localhost:8001/redfin_news/posts?limit=1"
-```
+- 서비스 기동 시 `core.lifespan`에서 Mongo 연결 후 `services.rag_service.init_index_auto()`로 벡터 인덱스를 준비합니다.
+- `services.strategy.choose_strategy_advanced`가 질문 의도에 따라 검색 범위를 자동 조정합니다.
+- 뉴스 출간/분류 관련 파일은 제거되었으며, RAG 기능만 유지됩니다.
 
----
-
-## 테스트 클라이언트
-
-### `test_rag_client.html`
-
-* 요청 보내기 → API 응답 확인
-* 자동으로 MongoDB에 로깅됨
-
-### `tesst/test_news_view.html`
-
-* 최신 기사 1건 또는 `?post_id=` 지정 조회 가능
-
-```bash
-python -m http.server 5500
-# http://localhost:5500/tesst/test_news_view.html
-```
-
----
-
-## 로깅/관측
-
-* **자동 저장**: `/redfin_target-insight`, `/redfin_news/publish*` 응답 모두 MongoDB 기록
-* **LangSmith 연동**:
-
-  * 프로젝트명 — `redfin_target-insight`, `redfin_news-publish`
-  * 요청 단위 `run_config` 기반 tracer 주입 (전역 env 스왑 금지)
-
----
-
-## 개발 체크리스트
-
-* [x] `/redfin_target-insight` → 자동 Mongo 로깅
-* [x] `/redfin_news/publish_from_env` → 뉴스 출간 후 DB 저장
-* [x] `test_news_view.html`에서 TL;DR + 본문 렌더링
-* [ ] TL;DR 3줄 준수율 강화 (리프로그램 추가 예정)
-* [ ] 인덱스 기동 최적화 (백그라운드 로딩)
-* [ ] 로그 공통 스키마 정리
-* [ ] SSE 스트리밍 응답
+필요한 설정 변경은 `.env` 또는 `core/settings.py`를 수정한 뒤 서버를 재시작하세요.
 
 ---
 
 ## 업데이트 내역
-
-* 2025-08-27: `api_rag.py` 최초 구현, MongoDB 자동 저장 적용
-* 2025-08-28: `redfin_news` 파이프라인 추가, Smart Brevity 한국어 템플릿 추가
-* 2025-09-01: `core/settings.py` Pydantic v2 서브모델 구조 적용
-* 2025-09-01: 뉴스 컬렉션 `news_semantic_v1`로 통일, 시드 제어 옵션(`NEWS__SEED_ON_STARTUP`)
-* 2025-09-02: LangSmith 프로젝트명 기능별 분리(`redfin_target-insight`, `redfin_news-publish`)
-* 2025-09-02: 프롬프트 관리 구조 개선(`prompts/personas/*.md`, `system_insight.md`)
+2025-08-27: api_rag.py 최초 구현, MongoDB 자동 저장 적용
+2025-08-28: redfin_news 파이프라인 추가, Smart Brevity 한국어 템플릿 추가
+2025-09-01: core/settings.py Pydantic v2 서브모델 구조 적용
+2025-09-01: 뉴스 컬렉션 news_semantic_v1로 통일, 시드 제어 옵션(NEWS__SEED_ON_STARTUP)
+2025-09-02: LangSmith 프로젝트명 기능별 분리(redfin_target-insight, redfin_news-publish)
+2025-09-02: 프롬프트 관리 구조 개선(prompts/personas/*.md, system_insight.md)
+2025-09-24: redfin_news 관련 코드 제거 및 RAG 전용 API로 정리
+2025-09-24: 환경 변수 네이밍/한글 주석 정비 및 README/.env UTF-8 재작성

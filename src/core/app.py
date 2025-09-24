@@ -5,7 +5,6 @@ from fastapi.middleware.cors import CORSMiddleware
 from core import settings
 from core.lifespan import lifespan
 from routers.redfin import router as redfin_router
-from routers.news import router as news_router
 
 def create_app() -> FastAPI:
     app = FastAPI(
@@ -16,9 +15,9 @@ def create_app() -> FastAPI:
 
     app.add_middleware(
         CORSMiddleware,
-        allow_origins=["*"],         # ëª¨ë“  ì˜¤ë¦¬ì§„ í—ˆìš©
-        allow_origin_regex=".*",     # ì •ê·œì‹ìœ¼ë¡œë„ ëª¨ë“  ì˜¤ë¦¬ì§„ í—ˆìš©
-        allow_credentials=True,      # ì¿ í‚¤/ì„¸ì…˜ ì¸ì¦ë„ í—ˆìš©í•˜ë ¤ë©´ True
+        allow_origins=["*"],         # ¸ðµç ??¸®????¿ë
+        allow_origin_regex=".*",     # ??±Ô??À¸·Îµµ ¸ðµç ??¸®????¿ë
+        allow_credentials=True,      # ÄíÅ°/??¼Ç ??Áõ????¿ë??·Á??True
         allow_methods=["*"],
         allow_headers=["*"],
     )
@@ -32,6 +31,5 @@ def create_app() -> FastAPI:
         return {"ok": True}
 
     app.include_router(redfin_router)
-    app.include_router(news_router)
-    
+
     return app
