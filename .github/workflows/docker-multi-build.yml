@@ -1,0 +1,203 @@
+# .github/workflows/docker-multi-build.yml
+name: Build & Push Docker Images (multi)
+
+on:
+  workflow_call:
+  push:
+    branches: [ "main" ]
+    tags: [ "v*.*.*", "release-*" ]
+  pull_request:
+    branches: [ "main" ]
+  workflow_dispatch:
+    inputs:
+      registries:
+        description: "Target registry (ghcr|dockerhub|both)"
+        required: true
+        default: "both"
+        type: choice
+        options: [ "ghcr", "dockerhub", "both" ]
+      platforms:
+        description: "Target platforms"
+        required: true
+        default: "linux/amd64,linux/arm64"
+        type: string
+
+concurrency:
+  group: docker-build-${{ github.ref }}
+  cancel-in-progress: true
+
+# Organization variables 사용: vars.DOCKERHUB_NAMESPACE
+
+jobs:
+  detect-images:
+    name: Detect Dockerfiles
+    runs-on: ubuntu-latest
+    outputs:
+      matrix: ${{ steps.gen.outputs.matrix }}
+      has_images: ${{ steps.gen.outputs.has_images }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Find Dockerfiles & generate matrix
+        id: gen
+        shell: bash
+        run: |
+          set -euo pipefail
+          
+          # Dockerfile 검색 (git ls-files와 find 조합으로 더 안정적)
+          files=""
+          if git ls-files | grep -q -E '(^|/)[Dd]ockerfile$'; then
+            files=$(git ls-files | grep -E '(^|/)[Dd]ockerfile$')
+          elif find . -name "Dockerfile" -o -name "dockerfile" | grep -q .; then
+            files=$(find . -name "Dockerfile" -o -name "dockerfile" | sed 's|^\./||')
+          fi
+          
+          echo "Found Dockerfiles: $files"
+          
+          if [ -z "${files}" ]; then
+            echo "No Dockerfiles found"
+            jq -cn '{include:[]}' > matrix.json
+          else
+            # 더 간단하고 안전한 matrix 생성
+            echo "$files" | while IFS= read -r dockerfile; do
+              if [ -n "$dockerfile" ]; then
+                context=$(dirname "$dockerfile")
+                if [ "$context" = "." ]; then
+                  context=""
+                  name="app"
+                else
+                  name=$(basename "$context")
+                fi
+                
+                # 이름 정규화 (소문자, 하이픈으로 변환)
+                name=$(echo "$name" | tr '[:upper:]' '[:lower:]' | sed 's/[^a-z0-9._-]/-/g')
+                
+                echo "{\"context\":\"$context\",\"dockerfile\":\"$dockerfile\",\"name\":\"$name\"}"
+              fi
+            done | jq -s '{include: .}' > matrix.json
+          fi
+          
+          # Matrix 유효성 검증
+          if ! jq empty matrix.json 2>/dev/null; then
+            echo "Error: Invalid JSON in matrix.json"
+            cat matrix.json
+            exit 1
+          fi
+          
+          COUNT=$(jq '.include | length' matrix.json)
+          echo "has_images=$([ "$COUNT" -gt 0 ] && echo true || echo false)" >> "$GITHUB_OUTPUT"
+          echo "matrix=$(jq -c . matrix.json)" >> "$GITHUB_OUTPUT"
+
+      - name: Show matrix
+        run: cat matrix.json
+
+  build:
+    name: Build ${{ matrix.target.name }}
+    needs: detect-images
+    if: ${{ needs.detect-images.outputs.has_images == 'true' }}
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        target: ${{ fromJSON(needs.detect-images.outputs.matrix).include }}
+
+    permissions:
+      contents: read
+      packages: write
+      id-token: write
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Normalize repo slug to lowercase
+        run: |
+          echo "REPO_SLUG=$(echo '${{ github.event.repository.name }}' | tr '[:upper:]' '[:lower:]')" >> $GITHUB_ENV
+
+      - name: Set up QEMU
+        uses: docker/setup-qemu-action@v3
+
+      - name: Set up Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Resolve inputs
+        id: vars
+        run: |
+          REG="${{ inputs.registries || 'both' }}"
+          PLAT="${{ inputs.platforms || 'linux/amd64,linux/arm64' }}"
+          echo "registries=$REG" >> "$GITHUB_OUTPUT"
+          echo "platforms=$PLAT" >> "$GITHUB_OUTPUT"
+
+      - name: Login to GHCR
+        if: contains(steps.vars.outputs.registries, 'ghcr') || contains(steps.vars.outputs.registries, 'both')
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Debug Docker Hub credentials
+        if: contains(steps.vars.outputs.registries, 'dockerhub') || contains(steps.vars.outputs.registries, 'both')
+        run: |
+          echo "Docker Hub Username: ${{ vars.DOCKERHUB_NAMESPACE }}"
+          echo "Docker Hub Token length: ${#DOCKERHUB_TOKEN}"
+          echo "Docker Hub Token (first 10 chars): ${DOCKERHUB_TOKEN:0:10}..."
+
+      - name: Login to Docker Hub
+        if: contains(steps.vars.outputs.registries, 'dockerhub') || contains(steps.vars.outputs.registries, 'both')
+        uses: docker/login-action@v3
+        with:
+          username: ${{ vars.DOCKERHUB_NAMESPACE }}
+          password: ${{ secrets.DOCKERHUB_TOKEN }}
+
+      - name: Docker meta (GHCR + Docker Hub)
+        id: meta
+        uses: docker/metadata-action@v5
+        with:
+          images: |
+            ${{ (contains(steps.vars.outputs.registries, 'ghcr') || contains(steps.vars.outputs.registries, 'both')) && format('ghcr.io/{0}/{1}-{2}', github.repository_owner, env.REPO_SLUG, matrix.target.name) || '' }}
+            ${{ (contains(steps.vars.outputs.registries, 'dockerhub') || contains(steps.vars.outputs.registries, 'both')) && format('{0}/{1}-{2}', vars.DOCKERHUB_NAMESPACE, env.REPO_SLUG, matrix.target.name) || '' }}
+          tags: |
+            type=ref,event=branch
+            type=ref,event=pr
+            type=ref,event=tag
+            type=semver,pattern={{version}}
+            type=semver,pattern={{major}}.{{minor}}
+            type=raw,value=latest,enable={{is_default_branch}}
+            type=sha
+          labels: |
+            org.opencontainers.image.source=${{ github.repository }}
+            org.opencontainers.image.revision=${{ github.sha }}
+            org.opencontainers.image.title=${{ env.REPO_SLUG }}-${{ matrix.target.name }}
+
+      - name: Build & Push
+        uses: docker/build-push-action@v6
+        with:
+          context: ${{ matrix.target.context }}
+          file: ${{ matrix.target.dockerfile }}
+          push: ${{ github.event_name != 'pull_request' }}
+          platforms: ${{ steps.vars.outputs.platforms }}
+          labels: ${{ steps.meta.outputs.labels }}
+          tags: ${{ steps.meta.outputs.tags }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+          sbom: true
+          provenance: true
+
+      - name: Run Trivy vulnerability scanner on image
+        uses: aquasecurity/trivy-action@master
+        if: github.event_name != 'pull_request'
+        with:
+          image-ref: ${{ steps.meta.outputs.tags }}
+          format: 'sarif'
+          output: 'trivy-image-results.sarif'
+          severity: 'CRITICAL,HIGH'
+        continue-on-error: true
+
+      - name: Upload Trivy image scan results
+        uses: github/codeql-action/upload-sarif@v2
+        if: always() && github.event_name != 'pull_request'
+        with:
+          sarif_file: 'trivy-image-results.sarif'
+

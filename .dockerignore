@@ -1,0 +1,73 @@
+# Git
+.git
+.gitignore
+
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+*.egg-info/
+*.egg
+
+# Virtual environments
+.env
+.venv
+venv/
+ENV/
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Testing
+.pytest_cache/
+.coverage
+htmlcov/
+
+# Documentation
+docs/
+*.md
+!README.md
+
+# Docker
+docker-compose*.yml
+.dockerignore
+Dockerfile
+
+# Notebooks
+*.ipynb
+.ipynb_checkpoints/
+
+# Test files
+test/
+tests/
+*.test.py
+
+# Data files (대용량)
+*.pdf
+*.jsonl
+*.csv
+*.parquet
+dataset/
+
+# Model files
+*.pkl
+*.joblib
+*.h5
+*.onnx
+*.bin
+*.safetensors
+
+# Temporary
+*.tmp
+*.temp
+*.log
+
